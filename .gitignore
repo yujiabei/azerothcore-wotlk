@@ -132,3 +132,5 @@ compile_commands.json
 /start-pb.ps1
 /stop-pb.ps1
 /试玩说明.txt
+
+.worktrees/
