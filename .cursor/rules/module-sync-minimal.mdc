@@ -1,0 +1,28 @@
+---
+description: When preparing a Docker/module rebuild from a feature worktree, copy only changed files—not a full-tree mirror. Upstream git sync is fine.
+globs: modules/**/*,apps/docker/**/*,docker-compose*.yml,.worktrees/**/*
+alwaysApply: false
+---
+
+# Minimal module publish into Docker build path
+
+`modules/*` is often a separate checkout/worktree. Docker builds from the compose project’s `modules/` (`COPY modules` + ccache). **Blind full-tree filesystem copy** of a feature worktree over that path (e.g. `robocopy … /E`) rewrites tons of files and can cold-start ccache—use it only when you intentionally want a wholesale tree replace.
+
+## Forbidden (local feature → Docker path)
+
+- Do **not** mirror an entire module tree from a feature worktree into `modules/<name>` just to include a few local edits in `docker compose build`.
+- Copy **only** the files that change created or edited (explicit list), or edit directly under the compose `modules/<name>` path.
+
+```text
+# ❌ BAD — whole-tree mirror for a small feature
+robocopy .worktrees/.../modules/mod-playerbots modules/mod-playerbots /E /XD .git
+
+# ✅ GOOD — only touched files
+# PlayerbotsBgFill.h, BattleGroundJoinAction.*, RandomPlayerbotMgr.*, …
+```
+
+## Allowed / expected (upstream & fork updates)
+
+- **Do** keep modules current with the official fork via **git** (`fetch` / `pull` / `merge` / `rebase`, or re-clone), including updating the whole module tree when upstream moved.
+- That is intentional version sync, not a worktree publish shortcut. Prefer git over filesystem mirror so history and remotes stay correct.
+- Runtime-only `env/dist/etc/**` changes do not require module sync or image rebuild.
