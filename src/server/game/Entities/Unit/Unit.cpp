@@ -2813,18 +2813,53 @@ void Unit::AttackerStateUpdate(Unit* victim, WeaponAttackType attType /*= BASE_A
 
         _lastDamagedTargetGuid = victim->GetGUID();
 
-        DealMeleeDamage(&damageInfo, true);
+        uint32 const totalDamage = damageInfo.damages[0].damage + damageInfo.damages[1].damage;
+        // Delay only the lethal apply so the creature falls at the weapon impact frame.
+        // Swing packet is still sent immediately (animation/sound stay client-timed).
+        bool const delayLethalKill = IsPlayer() && victim->IsCreature() && victim->IsAlive()
+            && totalDamage > 0 && totalDamage >= victim->GetHealth()
+            && (damageInfo.hitOutCome == MELEE_HIT_NORMAL || damageInfo.hitOutCome == MELEE_HIT_CRIT
+                || damageInfo.hitOutCome == MELEE_HIT_GLANCING || damageInfo.hitOutCome == MELEE_HIT_CRUSHING);
 
-        DamageInfo dmgInfo(damageInfo);
-        Unit::ProcSkillsAndAuras(damageInfo.attacker, damageInfo.target, damageInfo.procAttacker, damageInfo.procVictim, dmgInfo.GetHitMask(), dmgInfo.GetDamage(),
-            damageInfo.attackType, nullptr, nullptr, -1, nullptr, &dmgInfo);
+        if (delayLethalKill)
+        {
+            uint32 const delayMs = std::clamp(GetAttackTime(attType) * 35 / 100, 250u, 500u);
+            ObjectGuid const targetGuid = victim->GetGUID();
+            CalcDamageInfo delayedInfo = damageInfo;
+
+            m_Events.AddEventAtOffset([this, targetGuid, delayedInfo]() mutable
+            {
+                Unit* target = ObjectAccessor::GetUnit(*this, targetGuid);
+                if (!IsInWorld() || !IsAlive() || !target || !target->IsInWorld() || !target->IsAlive())
+                    return;
+
+                delayedInfo.attacker = this;
+                delayedInfo.target = target;
+
+                DealMeleeDamage(&delayedInfo, true);
+
+                DamageInfo dmgInfo(delayedInfo);
+                Unit::ProcSkillsAndAuras(delayedInfo.attacker, delayedInfo.target, delayedInfo.procAttacker, delayedInfo.procVictim,
+                    dmgInfo.GetHitMask(), dmgInfo.GetDamage(), delayedInfo.attackType, nullptr, nullptr, -1, nullptr, &dmgInfo);
+            }, Milliseconds(delayMs));
+        }
+        else
+        {
+            DealMeleeDamage(&damageInfo, true);
+
+            DamageInfo dmgInfo(damageInfo);
+            Unit::ProcSkillsAndAuras(damageInfo.attacker, damageInfo.target, damageInfo.procAttacker, damageInfo.procVictim, dmgInfo.GetHitMask(), dmgInfo.GetDamage(),
+                damageInfo.attackType, nullptr, nullptr, -1, nullptr, &dmgInfo);
+        }
 
         if (IsPlayer())
             LOG_DEBUG("entities.unit", "AttackerStateUpdate: (Player) {} attacked {} for {} dmg, absorbed {}, blocked {}, resisted {}.",
-                                 GetGUID().ToString(), victim->GetGUID().ToString(), dmgInfo.GetDamage(), dmgInfo.GetAbsorb(), dmgInfo.GetBlock(), dmgInfo.GetResist());
+                                 GetGUID().ToString(), victim->GetGUID().ToString(), totalDamage, damageInfo.damages[0].absorb + damageInfo.damages[1].absorb,
+                                 damageInfo.blocked_amount, damageInfo.damages[0].resist + damageInfo.damages[1].resist);
         else
             LOG_DEBUG("entities.unit", "AttackerStateUpdate: (NPC) {} attacked {} for {} dmg, absorbed {}, blocked {}, resisted {}.",
-                                 GetGUID().ToString(), victim->GetGUID().ToString(), dmgInfo.GetDamage(), dmgInfo.GetAbsorb(), dmgInfo.GetBlock(), dmgInfo.GetResist());
+                                 GetGUID().ToString(), victim->GetGUID().ToString(), totalDamage, damageInfo.damages[0].absorb + damageInfo.damages[1].absorb,
+                                 damageInfo.blocked_amount, damageInfo.damages[0].resist + damageInfo.damages[1].resist);
 
     }
 }
