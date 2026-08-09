@@ -102,7 +102,9 @@ RUN --mount=type=cache,target=/ccache,sharing=locked \
        -DCMAKE_CXX_COMPILER_LAUNCHER="ccache"          \
        -DCMAKE_C_COMPILER_LAUNCHER="ccache"            \
        -DBoost_USE_STATIC_LIBS="ON"                    \
-    && cmake --build . --config "$CTYPE" -j $(($(nproc) + 1)) \
+    # Cap parallelism: full nproc OOMs Docker Desktop on ~8-16GB hosts
+    # during PlayerBots / large static library link steps.
+    && cmake --build . --config "$CTYPE" -j "${ACORE_BUILD_JOBS:-2}" \
     && cmake --install . --config "$CTYPE"
 
 #############################

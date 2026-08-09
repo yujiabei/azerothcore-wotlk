@@ -122,3 +122,13 @@ __pycache__/
 # ==================
 .cache
 compile_commands.json
+
+# Local PlayerBots ops helpers (machine paths / credentials)
+/launch-pb-client.bat
+/launch-pb-client.ps1
+/server-control.bat
+/server-control.ps1
+/setup-ahbot.ps1
+/start-pb.ps1
+/stop-pb.ps1
+/试玩说明.txt
