@@ -1,0 +1,10 @@
+## Interface: 30300
+## Title: FixDropDownMenu
+## Title-zhCN: 中文UI重叠修复
+## Notes: Fixes overlapping Chinese text in menus, quest text, merchant, unit frames, character stats, auction results, tradeskill/trainer lists, gear manager buttons, loot names, and chat loot lines.
+## Notes-zhCN: 修复右键菜单、ESC菜单、任务日志按钮、信件标题、任务正文/打字机尾字、经验、商人列表、头像数值、人物属性、拍卖行搜索结果、任务标题、专业/训练师技能列表、装备管理按钮、拾取栏物品名、聊天拾取提示等中文重叠。
+## Author: local
+## Version: 3.12
+## OptionalDeps: FriendsMenuXP, Duowan, DuowanChat, EN_UnitFrames, MerchantAssist, Accountant_Classic, Fence, AuctionLite
+
+FixDropDownMenu.lua
