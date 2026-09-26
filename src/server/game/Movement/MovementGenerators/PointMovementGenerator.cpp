@@ -22,6 +22,7 @@
 #include "MoveSplineInit.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
+#include "ScriptMgr.h"
 #include "World.h"
 #include <limits>
 
@@ -367,6 +368,12 @@ void EffectMovementGenerator::Initialize(Unit*)
 
 void EffectMovementGenerator::Finalize(Unit* unit)
 {
+    if (Player* player = unit->ToPlayer())
+    {
+        sScriptMgr->OnPlayerEffectMovement(player, m_Id);
+        return;
+    }
+
     if (!unit->IsCreature())
         return;
 

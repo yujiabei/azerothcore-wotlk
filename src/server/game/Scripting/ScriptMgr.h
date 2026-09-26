@@ -591,6 +591,7 @@ public: /* UnitScript */
 
 public: /* MovementHandlerScript */
     void OnPlayerMove(Player* player, MovementInfo movementInfo, uint32 opcode);
+    void OnPlayerEffectMovement(Player* player, uint32 id);
 
 public: /* AllCreatureScript */
     //listener function (OnAllCreatureUpdate) is called by OnCreatureUpdate

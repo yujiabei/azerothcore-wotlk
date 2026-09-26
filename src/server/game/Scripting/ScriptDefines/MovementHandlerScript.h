@@ -25,6 +25,7 @@
 enum MovementHook
 {
     MOVEMENTHOOK_ON_PLAYER_MOVE,
+    MOVEMENTHOOK_ON_PLAYER_EFFECT_MOVEMENT,
     MOVEMENTHOOK_END
 };
 
@@ -36,6 +37,9 @@ protected:
 public:
     //Called whenever a player moves
     virtual void OnPlayerMove(Player* /*player*/, MovementInfo /*movementInfo*/, uint32 /*opcode*/) { }
+
+    //Called when a player effect spline (jump, charge) finishes. Id is the value passed to MoveJump.
+    virtual void OnPlayerEffectMovement(Player* /*player*/, uint32 /*id*/) { }
 };
 
 #endif

@@ -25,9 +25,15 @@
 #include "Chat.h"
 #include "GameTime.h"
 #include "GridNotifiers.h"
+#include "GridTerrainData.h"
 #include "Group.h"
+#include "Map.h"
+#include "MotionMaster.h"
+#include "MovementHandlerScript.h"
 #include "Pet.h"
+#include "Player.h"
 #include "ReputationMgr.h"
+#include "ScriptMgr.h"
 #include "SkillDiscovery.h"
 #include "SpellAuraEffects.h"
 #include "SpellScript.h"
@@ -36,6 +42,8 @@
 #include "Vehicle.h"
 #include <array>
 #include <cmath>
+#include <mutex>
+#include <unordered_map>
 /*
  * Scripts for spells with SPELLFAMILY_GENERIC which cannot be included in AI script file
  * of creature using it or can't be bound to any player class.
@@ -6168,6 +6176,257 @@ class spell_gen_submerge_visual : public AuraScript
     }
 };
 
+// Cliff hop: pick a point within 3 body lengths, jump there, and hold on steep ground.
+constexpr uint32 SPELL_CLIFF_HOP = 900001;
+constexpr uint32 SPELL_CLIFF_HOLD = 900002;
+constexpr uint32 CLIFF_HOP_MOTION_ID = 0xC11F;
+constexpr float CLIFF_STEEP_DEGREES = 50.0f;
+constexpr float CLIFF_SURFACE_OFFSET = 0.5f;
+constexpr float CLIFF_RAD_TO_DEG = 57.2957795f;
+
+enum class CliffHopDestResult
+{
+    Ok,
+    TooFar,
+    NoSurface
+};
+
+std::mutex _cliffHopLandingsMutex;
+std::unordered_map<ObjectGuid, Position> _cliffHopLandings;
+
+float CliffHopMaxRange(Unit const* caster)
+{
+    return 3.0f * std::max(caster->GetCollisionHeight(), 1.0f);
+}
+
+bool CliffHopRayHit(Unit* caster, float x, float y, float z, float& hx, float& hy, float& hz)
+{
+    float const half = caster->GetCollisionHeight() * 0.5f;
+    float const sx = caster->GetPositionX();
+    float const sy = caster->GetPositionY();
+    float const sz = caster->GetPositionZ() + half;
+    float const dz = z + half;
+
+    Map* map = caster->GetMap();
+    float staticX = x, staticY = y, staticZ = z;
+    bool const staticHit = map->GetMapCollisionData().GetStaticTree().GetObjectHitPos(
+        sx, sy, sz, x, y, dz, staticX, staticY, staticZ, -CLIFF_SURFACE_OFFSET);
+
+    float dynamicX = x, dynamicY = y, dynamicZ = z;
+    bool const dynamicHit = map->GetMapCollisionData().GetDynamicTree().GetObjectHitPos(
+        caster->GetPhaseMask(), sx, sy, sz, x, y, dz, dynamicX, dynamicY, dynamicZ, -CLIFF_SURFACE_OFFSET);
+
+    if (!staticHit && !dynamicHit)
+        return false;
+
+    Position const staticPos(staticX, staticY, staticZ);
+    Position const dynamicPos(dynamicX, dynamicY, dynamicZ);
+    bool const closerStatic = !dynamicHit || caster->GetExactDist(staticPos) <= caster->GetExactDist(dynamicPos);
+    bool const useStatic = staticHit && closerStatic;
+    if (useStatic)
+    {
+        hx = staticX;
+        hy = staticY;
+        hz = staticZ;
+    }
+    else
+    {
+        hx = dynamicX;
+        hy = dynamicY;
+        hz = dynamicZ;
+    }
+
+    return true;
+}
+
+CliffHopDestResult SnapCliffHopDest(Unit* caster, float x, float y, float z, Position& out)
+{
+    if (caster->GetExactDist(x, y, z) > CliffHopMaxRange(caster))
+        return CliffHopDestResult::TooFar;
+
+    float hx = x, hy = y, hz = z;
+    if (CliffHopRayHit(caster, x, y, z, hx, hy, hz))
+    {
+        float const half = caster->GetCollisionHeight() * 0.5f;
+        Position const hit(hx, hy, hz);
+        if (hit.GetExactDist(x, y, z + half) <= 1.5f)
+        {
+            out.Relocate(hx, hy, hz - half);
+            if (caster->GetExactDist(out) > CliffHopMaxRange(caster))
+                return CliffHopDestResult::TooFar;
+
+            return CliffHopDestResult::Ok;
+        }
+    }
+
+    float const ground = caster->GetMap()->GetHeight(caster->GetPhaseMask(), x, y, z, true, 2.0f);
+    if (ground <= INVALID_HEIGHT || std::fabs(ground - z) > 2.0f)
+        return CliffHopDestResult::NoSurface;
+
+    out.Relocate(x, y, ground);
+    if (caster->GetExactDist(out) > CliffHopMaxRange(caster))
+        return CliffHopDestResult::TooFar;
+
+    return CliffHopDestResult::Ok;
+}
+
+bool CliffHopNeedsHold(Unit* unit, Position const& dest)
+{
+    Map* map = unit->GetMap();
+    float const x = dest.GetPositionX();
+    float const y = dest.GetPositionY();
+    float const z = dest.GetPositionZ();
+    float const ground = map->GetHeight(unit->GetPhaseMask(), x, y, z, true, 2.0f);
+    if (ground <= INVALID_HEIGHT || std::fabs(ground - dest.GetPositionZ()) > 1.5f)
+        return true;
+
+    float const step = 1.0f;
+    float maxDelta = 0.0f;
+    float const offsets[4][2] =
+    {
+        { step, 0.0f }, { -step, 0.0f }, { 0.0f, step }, { 0.0f, -step }
+    };
+    for (auto const& offset : offsets)
+    {
+        float const sample = map->GetHeight(unit->GetPhaseMask(), x + offset[0], y + offset[1], z, true, 3.0f);
+        if (sample > INVALID_HEIGHT)
+            maxDelta = std::max(maxDelta, std::fabs(sample - ground));
+    }
+
+    return std::atan(maxDelta / step) * CLIFF_RAD_TO_DEG > CLIFF_STEEP_DEGREES;
+}
+
+class spell_cliff_hop : public SpellScript
+{
+    PrepareSpellScript(spell_cliff_hop);
+
+    Position _dest;
+    bool _ready = false;
+
+    SpellCastResult CheckCast()
+    {
+        _ready = false;
+
+        Unit* caster = GetCaster();
+        if (!caster->IsPlayer())
+            return SPELL_FAILED_DONT_REPORT;
+
+        WorldLocation const* dest = GetExplTargetDest();
+        if (!dest)
+            return SPELL_FAILED_BAD_TARGETS;
+
+        CliffHopDestResult const result = SnapCliffHopDest(caster, dest->GetPositionX(), dest->GetPositionY(),
+            dest->GetPositionZ(), _dest);
+        if (result == CliffHopDestResult::TooFar)
+            return SPELL_FAILED_OUT_OF_RANGE;
+        if (result != CliffHopDestResult::Ok)
+            return SPELL_FAILED_NOPATH;
+
+        _ready = true;
+        return SPELL_CAST_OK;
+    }
+
+    void HandleCast()
+    {
+        if (!_ready)
+            return;
+
+        Unit* caster = GetCaster();
+        Player* player = caster->ToPlayer();
+        if (!player)
+            return;
+
+        caster->RemoveAurasDueToSpell(SPELL_CLIFF_HOLD);
+
+        {
+            std::lock_guard<std::mutex> guard(_cliffHopLandingsMutex);
+            _cliffHopLandings[player->GetGUID()] = _dest;
+        }
+
+        float const dist2d = std::max(caster->GetExactDist2d(_dest), 0.5f);
+        float const speedXY = std::max(dist2d / 0.45f, 1.0f);
+        float const speedZ = 10.0f;
+
+        player->SetCanTeleport(true);
+        sScriptMgr->AnticheatSetUnderACKmount(player);
+        player->SetFallInformation(uint32(GameTime::GetGameTime().count()), _dest.GetPositionZ());
+        caster->GetMotionMaster()->MoveJump(_dest.GetPositionX(), _dest.GetPositionY(), _dest.GetPositionZ(),
+            speedXY, speedZ, CLIFF_HOP_MOTION_ID);
+    }
+
+    void Register() override
+    {
+        OnCheckCast += SpellCheckCastFn(spell_cliff_hop::CheckCast);
+        OnCast += SpellCastFn(spell_cliff_hop::HandleCast);
+    }
+};
+
+class spell_cliff_hold : public AuraScript
+{
+    PrepareAuraScript(spell_cliff_hold);
+
+    void HandleApply(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Unit* target = GetTarget();
+        if (Player* player = target->ToPlayer())
+            sScriptMgr->AnticheatSetUnderACKmount(player);
+
+        target->SetControlled(true, UNIT_STATE_ROOT);
+        target->SetDisableGravity(true);
+    }
+
+    void HandleRemove(AuraEffect const* /*aurEff*/, AuraEffectHandleModes /*mode*/)
+    {
+        Unit* target = GetTarget();
+        target->SetControlled(false, UNIT_STATE_ROOT);
+        target->SetDisableGravity(false);
+        if (Player* player = target->ToPlayer())
+            player->SetFallInformation(uint32(GameTime::GetGameTime().count()), player->GetPositionZ());
+    }
+
+    void Register() override
+    {
+        OnEffectApply += AuraEffectApplyFn(spell_cliff_hold::HandleApply, EFFECT_0, SPELL_AURA_DUMMY,
+            AURA_EFFECT_HANDLE_REAL);
+        OnEffectRemove += AuraEffectRemoveFn(spell_cliff_hold::HandleRemove, EFFECT_0, SPELL_AURA_DUMMY,
+            AURA_EFFECT_HANDLE_REAL);
+    }
+};
+
+class spell_cliff_hop_move : public MovementHandlerScript
+{
+public:
+    spell_cliff_hop_move() : MovementHandlerScript("spell_cliff_hop_move",
+        std::vector<uint16>{ uint16(MOVEMENTHOOK_ON_PLAYER_EFFECT_MOVEMENT) }) { }
+
+    void OnPlayerEffectMovement(Player* player, uint32 id) override
+    {
+        if (id != CLIFF_HOP_MOTION_ID)
+            return;
+
+        Position dest;
+        {
+            std::lock_guard<std::mutex> guard(_cliffHopLandingsMutex);
+            auto itr = _cliffHopLandings.find(player->GetGUID());
+            if (itr == _cliffHopLandings.end())
+                return;
+
+            dest = itr->second;
+            _cliffHopLandings.erase(itr);
+        }
+
+        float const orientation = player->GetOrientation();
+        player->SetCanTeleport(true);
+        player->UpdatePosition(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), orientation, true);
+        Position packetDest(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), orientation);
+        player->SendTeleportPacket(packetDest);
+        player->SetFallInformation(uint32(GameTime::GetGameTime().count()), dest.GetPositionZ());
+
+        if (CliffHopNeedsHold(player, dest))
+            player->CastSpell(player, SPELL_CLIFF_HOLD, true);
+    }
+};
+
 void AddSC_generic_spell_scripts()
 {
     RegisterSpellScript(spell_silithyst);
@@ -6357,4 +6616,7 @@ void AddSC_generic_spell_scripts()
     RegisterSpellScript(spell_gen_black_bow_of_the_betrayer);
     RegisterSpellScript(spell_gen_filter_party_level_80);
     RegisterSpellScript(spell_gen_submerge_visual);
+    RegisterSpellScript(spell_cliff_hop);
+    RegisterSpellScript(spell_cliff_hold);
+    new spell_cliff_hop_move();
 }

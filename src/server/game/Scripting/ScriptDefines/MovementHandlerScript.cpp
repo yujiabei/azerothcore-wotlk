@@ -24,6 +24,11 @@ void ScriptMgr::OnPlayerMove(Player* player, MovementInfo movementInfo, uint32 o
     CALL_ENABLED_HOOKS(MovementHandlerScript, MOVEMENTHOOK_ON_PLAYER_MOVE, script->OnPlayerMove(player, movementInfo, opcode));
 }
 
+void ScriptMgr::OnPlayerEffectMovement(Player* player, uint32 id)
+{
+    CALL_ENABLED_HOOKS(MovementHandlerScript, MOVEMENTHOOK_ON_PLAYER_EFFECT_MOVEMENT, script->OnPlayerEffectMovement(player, id));
+}
+
 MovementHandlerScript::MovementHandlerScript(char const* name, std::vector<uint16> enabledHooks) :
     ScriptObject(name, MOVEMENTHOOK_END)
 {
