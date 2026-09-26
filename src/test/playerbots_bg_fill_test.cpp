@@ -55,3 +55,11 @@ TEST(PlayerbotsBgFill, FactionNoRealPlayersUnconstrained)
 {
     EXPECT_TRUE(PlayerbotsBgFactionAllowsJoin(1, 5, 1 /*Horde*/, PLAYERBOTS_BG_REAL_NONE));
 }
+
+TEST(PlayerbotsBgFill, WhiteKitFollowsRealPlayersNotPreserve)
+{
+    EXPECT_FALSE(PlayerbotsBgShouldApplyWhiteFillKit(PLAYERBOTS_BG_REAL_NONE));
+    EXPECT_TRUE(PlayerbotsBgShouldApplyWhiteFillKit(PLAYERBOTS_BG_REAL_ALLIANCE));
+    EXPECT_TRUE(PlayerbotsBgShouldApplyWhiteFillKit(PLAYERBOTS_BG_REAL_HORDE));
+    EXPECT_TRUE(PlayerbotsBgShouldApplyWhiteFillKit(PLAYERBOTS_BG_REAL_BOTH));
+}

@@ -75,3 +75,17 @@ TEST(PlayerbotsLfgFill, LootConflictFallbackAfterWait)
     EXPECT_TRUE(PlayerbotsLfgAllowLootConflict(100, 130, 30));
     EXPECT_FALSE(PlayerbotsLfgAllowLootConflict(0, 200, 30));
 }
+
+TEST(PlayerbotsLfgFill, KeepExistingWhenQualityIsHigher)
+{
+    // uncommon(2) vs normal/white(1)
+    EXPECT_TRUE(PlayerbotsLfgKeepExistingItem(2, 20, 1, 60));
+    EXPECT_FALSE(PlayerbotsLfgKeepExistingItem(1, 60, 2, 20));
+}
+
+TEST(PlayerbotsLfgFill, KeepExistingWhenSameQualityAndItemLevelNotLower)
+{
+    EXPECT_TRUE(PlayerbotsLfgKeepExistingItem(3, 50, 3, 50));
+    EXPECT_TRUE(PlayerbotsLfgKeepExistingItem(3, 60, 3, 50));
+    EXPECT_FALSE(PlayerbotsLfgKeepExistingItem(3, 40, 3, 50));
+}
