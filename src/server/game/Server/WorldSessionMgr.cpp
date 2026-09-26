@@ -20,6 +20,7 @@
 #include "RBAC.h"
 #include "GameTime.h"
 #include "Metric.h"
+#include "ObjectAccessor.h"
 #include "Player.h"
 #include "ScriptMgr.h"
 #include "World.h"
@@ -221,6 +222,10 @@ bool WorldSessionMgr::KickSession(uint32 id)
 void WorldSessionMgr::KickAll()
 {
     _queuedPlayer.clear();                                 // prevent send queue update packet and login queued sessions
+
+    // Persist characters first. Playerbots logout walks every bot and can take long
+    // enough that a short process kill would otherwise drop unsaved player progress.
+    ObjectAccessor::SaveAllPlayers();
 
     // session not removed at kick and will removed in next update tick
     for (SessionMap::const_iterator itr = _sessions.begin(); itr != _sessions.end(); ++itr)
