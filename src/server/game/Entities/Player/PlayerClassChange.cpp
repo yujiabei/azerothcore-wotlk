@@ -34,7 +34,10 @@
 #include "Spell.h"
 #include "SpellAuras.h"
 #include "SpellMgr.h"
+#include "World.h"
 
+#include <algorithm>
+#include <cmath>
 #include <functional>
 #include <unordered_set>
 #include <vector>
@@ -78,6 +81,23 @@ struct QuestSnap
 {
     uint32 Id = 0;
     QuestStatusData Data;
+};
+
+struct EquipSnap
+{
+    uint8 Slot = 0;
+    uint32 ItemLow = 0;
+};
+
+struct ProgressSnap
+{
+    bool Present = false;
+    uint8 Level = 1;
+    uint32 Xp = 0;
+    float Rest = 0.f;
+    uint8 Spec = 0;
+    uint32 LevelTime = 0;
+    uint32 PetId = 0;
 };
 
 struct ClassArchive
@@ -224,20 +244,34 @@ void LoadRows(CharacterDatabaseStatements id, uint32 guid, uint8 playerClass, st
     }
 }
 
-ClassArchive LoadArchive(uint32 guid, uint8 playerClass)
+ProgressSnap LoadProgress(uint32 guid, uint8 playerClass)
 {
-    ClassArchive archive;
+    ProgressSnap snap;
     CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_PROGRESS);
     stmt->SetData(0, guid);
     stmt->SetData(1, playerClass);
-    bool present = false;
     if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
     {
-        present = true;
-        archive.PetId = result->Fetch()[5].Get<uint32>();
+        Field* fields = result->Fetch();
+        snap.Present = true;
+        snap.Level = fields[0].Get<uint8>();
+        snap.Xp = fields[1].Get<uint32>();
+        snap.Rest = fields[2].Get<float>();
+        snap.Spec = fields[3].Get<uint8>();
+        snap.LevelTime = fields[4].Get<uint32>();
+        snap.PetId = fields[5].Get<uint32>();
+        if (!snap.Level)
+            snap.Level = 1;
     }
 
-    if (!present)
+    return snap;
+}
+
+ClassArchive LoadArchive(uint32 guid, uint8 playerClass, ProgressSnap const& progress)
+{
+    ClassArchive archive;
+    archive.PetId = progress.PetId;
+    if (!progress.Present)
         return archive;
 
     LoadRows<SpellSnap>(CHAR_SEL_CLASS_SPELL, guid, playerClass, archive.Spells, [](Field* fields, SpellSnap& row)
@@ -283,23 +317,11 @@ ClassArchive LoadArchive(uint32 guid, uint8 playerClass)
         row.Data.PlayerCount = fields[14].Get<uint16>();
     });
 
-    // Pet id is meaningful only when a progress row exists. Spell rows alone are not a snapshot.
-    if (!present)
-        archive.PetId = 0;
-
     return archive;
 }
 
-bool ArchiveExists(uint32 guid, uint8 playerClass)
-{
-    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_PROGRESS);
-    stmt->SetData(0, guid);
-    stmt->SetData(1, playerClass);
-    return bool(CharacterDatabase.Query(stmt));
-}
-
 void StoreArchive(uint32 guid, uint8 playerClass, ClassArchive const& archive, uint8 level, uint32 xp, float rest,
-    uint8 spec, uint32 levelTime)
+    uint8 spec, uint32 levelTime, std::vector<EquipSnap> const& equipment)
 {
     CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
     AppendClassDelete(trans, CHAR_DEL_CLASS_SPELL_BY_CLASS, guid, playerClass);
@@ -381,6 +403,17 @@ void StoreArchive(uint32 guid, uint8 playerClass, ClassArchive const& archive, u
         trans->Append(stmt);
     }
 
+    AppendClassDelete(trans, CHAR_DEL_CLASS_EQUIPMENT_BY_CLASS, guid, playerClass);
+    for (EquipSnap const& row : equipment)
+    {
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CLASS_EQUIPMENT);
+        stmt->SetData(0, guid);
+        stmt->SetData(1, playerClass);
+        stmt->SetData(2, row.Slot);
+        stmt->SetData(3, row.ItemLow);
+        trans->Append(stmt);
+    }
+
     AppendProgress(trans, guid, playerClass, level, xp, rest, spec, levelTime, archive.PetId);
     CharacterDatabase.DirectCommitTransaction(trans);
 }
@@ -394,14 +427,160 @@ void ConsumeArchive(CharacterDatabaseTransaction trans, uint32 guid, uint8 playe
     AppendClassDelete(trans, CHAR_DEL_CLASS_SKILL_BY_CLASS, guid, playerClass);
     AppendClassDelete(trans, CHAR_DEL_CLASS_QUEST_BY_CLASS, guid, playerClass);
 }
+
+bool ItemFailsClassOrLevel(Player const* player, ItemTemplate const* proto)
+{
+    if (!proto)
+        return false;
+
+    // AllowableClass 0 is "no class restriction" on stored items. CanUseItem treats 0 as a
+    // failure, so the unequip predicate stays explicit and does not call CanUseItem.
+    bool classFail = proto->AllowableClass && (proto->AllowableClass & player->getClassMask()) == 0;
+    bool levelFail = proto->RequiredLevel && player->GetLevel() < proto->RequiredLevel;
+    return classFail || levelFail;
+}
+
+void ClampSkillToLevel(Player* player, uint16 skillId, uint16 value)
+{
+    uint16 cap = player->GetMaxSkillValueForLevel();
+    if (!value)
+        value = 1;
+    if (value > cap)
+        value = cap;
+
+    player->SetSkill(skillId, 0, value, cap);
+}
+
+// floor(highest * ratio), capped. Returns 1 when the boost does not apply.
+uint8 LegacyStartLevel(Player const* player)
+{
+    uint8 highest = player->GetHighestClassLevel();
+    uint8 minLevel = sConfigMgr->GetOption<uint8>("Multiclass.LegacyMinLevel", 20);
+    if (highest < minLevel)
+        return 1;
+
+    float ratio = sConfigMgr->GetOption<float>("Multiclass.LegacyLevelRatio", 0.5f);
+    if (ratio <= 0.f)
+        return 1;
+
+    uint32 cap = sConfigMgr->GetOption<uint32>("Multiclass.LegacyLevelCap", 60);
+    uint32 maxPlayer = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
+    uint32 scaled = uint32(std::floor(double(highest) * double(ratio)));
+    if (cap && scaled > cap)
+        scaled = cap;
+    if (scaled > maxPlayer)
+        scaled = maxPlayer;
+    if (scaled <= 1)
+        return 1;
+
+    return uint8(scaled);
+}
+
+void UnequipInvalidGear(Player* player)
+{
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item)
+            continue;
+
+        ItemTemplate const* proto = item->GetTemplate();
+        if (!ItemFailsClassOrLevel(player, proto))
+            continue;
+        if (item->IsNotEmptyBag())
+        {
+            LOG_ERROR("entities.player", "Player {} ({}) kept non-empty bag {} in slot {} after class change",
+                player->GetName(), player->GetGUID().ToString(), item->GetEntry(), uint32(slot));
+            continue;
+        }
+
+        ItemPosCountVec dest;
+        if (player->CanStoreItem(NULL_BAG, NULL_SLOT, dest, item, false) == EQUIP_ERR_OK)
+        {
+            player->RemoveItem(INVENTORY_SLOT_BAG_0, slot, true);
+            player->StoreItem(dest, item, true);
+            continue;
+        }
+
+        player->MoveItemFromInventory(INVENTORY_SLOT_BAG_0, slot, true);
+        CharacterDatabaseTransaction mailTrans = CharacterDatabase.BeginTransaction();
+        item->DeleteFromInventoryDB(mailTrans);
+        item->SaveToDB(mailTrans);
+        std::string subject = player->GetSession()->GetAcoreString(LANG_NOT_EQUIPPED_ITEM);
+        MailDraft(subject, "This item cannot be equipped by your current class and level.")
+            .AddItem(item)
+            .SendMailTo(mailTrans, player, MailSender(player, MAIL_STATIONERY_GM), MAIL_CHECK_MASK_COPIED);
+        CharacterDatabase.CommitTransaction(mailTrans);
+    }
+}
+
+void RestoreRememberedEquipment(Player* player, uint8 playerClass)
+{
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_EQUIPMENT);
+    stmt->SetData(0, player->GetGUID().GetCounter());
+    stmt->SetData(1, playerClass);
+    PreparedQueryResult result = CharacterDatabase.Query(stmt);
+    if (!result)
+        return;
+
+    bool loading = player->GetSession() && player->GetSession()->PlayerLoading();
+    do
+    {
+        Field* fields = result->Fetch();
+        uint8 slot = fields[0].Get<uint8>();
+        uint32 itemLow = fields[1].Get<uint32>();
+        if (slot >= EQUIPMENT_SLOT_END)
+            continue;
+
+        Item* item = player->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(itemLow));
+        if (!item)
+            continue;
+        if (item->GetBagSlot() == INVENTORY_SLOT_BAG_0 && item->GetSlot() == slot)
+            continue;
+
+        ItemTemplate const* proto = item->GetTemplate();
+        if (!proto || ItemFailsClassOrLevel(player, proto))
+            continue;
+
+        Item* occupied = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (occupied)
+        {
+            if (occupied->IsNotEmptyBag())
+                continue;
+
+            ItemPosCountVec bagDest;
+            if (player->CanStoreItem(NULL_BAG, NULL_SLOT, bagDest, occupied, false) != EQUIP_ERR_OK)
+                continue;
+
+            player->RemoveItem(INVENTORY_SLOT_BAG_0, slot, true);
+            player->StoreItem(bagDest, occupied, true);
+        }
+
+        uint16 dest = 0;
+        if (player->CanEquipItem(slot, dest, item, false, !loading) != EQUIP_ERR_OK)
+            continue;
+
+        player->RemoveItem(item->GetBagSlot(), item->GetSlot(), true);
+        player->EquipItem(dest, item, true);
+    } while (result->NextRow());
+
+    player->AutoUnequipOffhandIfNeed();
+}
 }
 
 // Fresh classes learn playercreateinfo skills, then level-scaled weapon/armor/class skills are raised to
 // level * 5 so learnSkillRewardedSpells grants ranks for the current level. LearnCustomSpells runs when
 // CONFIG_START_CUSTOM_SPELLS is set. learnQuestRewardedSpells is intentionally not called: it would
 // teach the previous class's quest rewards (charger, dreadsteed, death gate). Action bars are not copied
-// from playercreateinfo_action. Phase 1 still writes character_class_progress.level/xp/rest_bonus from the
-// live character so phase 2 can take those columns over. characters.level is unchanged and SetLevel is not used.
+// from playercreateinfo_action.
+// A class with no progress row is created with one GiveLevel(legacyLevel) call, the same absolute grant
+// .character level uses. That keeps talent points and skills on the normal level-up path. Mail and
+// recruit-a-friend inside GiveLevel run only when the character-wide maximum increases, and reach-level
+// criteria keep the highest counter, so a lower legacy level does not resend rewards or rewind achievements.
+// A returning class is restored with SetLevel + InitStatsForLevel and never GiveLevel.
+// XP is clamped below PLAYER_NEXT_LEVEL_XP. Rest and level play time move with the class.
+// Equipped item guids are stored per class and put back when the item is still owned and passes
+// AllowableClass and RequiredLevel. Anything else goes to bags, then mail.
 // The switch row is kept with target_class 0 so last_switch_at can enforce the cooldown.
 bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
 {
@@ -432,8 +611,9 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
     }
 
     uint32 guid = GetGUID().GetCounter();
-    bool returning = ArchiveExists(guid, newClass);
-    ClassArchive incoming = returning ? LoadArchive(guid, newClass) : ClassArchive();
+    ProgressSnap incomingProgress = LoadProgress(guid, newClass);
+    bool returning = incomingProgress.Present;
+    ClassArchive incoming = LoadArchive(guid, newClass, incomingProgress);
 
     ClassArchive outgoing;
     for (auto const& itr : m_spells)
@@ -541,10 +721,25 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
     if (GetPetStable() && GetPetStable()->CurrentPet)
         outgoing.PetId = GetPetStable()->CurrentPet->PetNumber;
 
+    std::vector<EquipSnap> equipped;
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        Item* item = GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item)
+            continue;
+
+        EquipSnap row;
+        row.Slot = slot;
+        row.ItemLow = item->GetGUID().GetCounter();
+        equipped.push_back(row);
+    }
+
     StoreArchive(guid, oldClass, outgoing, GetLevel(), GetUInt32Value(PLAYER_XP), GetRestBonus(), GetActiveSpec(),
-        GetLevelPlayedTime());
+        GetLevelPlayedTime(), equipped);
 
     RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
+    // InitStatsForLevel clears the mount display. Drop the aura too so a low level cannot stay mounted.
+    RemoveAurasByType(SPELL_AURA_MOUNTED);
     uint32 oldFamily = SpellFamilyForClass(oldClass);
     if (oldFamily != SPELLFAMILY_GENERIC)
     {
@@ -617,21 +812,59 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
         }
     }
 
+    // GiveLevel and InitStatsForLevel sync a live pet to the owner level. Dismiss first so a
+    // hunter pet is saved at the old class level instead of the level being restored.
+    if (GetPet())
+        RemovePet(nullptr, PET_SAVE_NOT_IN_SLOT);
+
     SetByteValue(UNIT_FIELD_BYTES_0, 1, newClass);
 
-    uint8 restoredSpec = GetActiveSpec();
-    if (returning)
-    {
-        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_PROGRESS);
-        stmt->SetData(0, guid);
-        stmt->SetData(1, newClass);
-        if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
-            restoredSpec = result->Fetch()[3].Get<uint8>();
-    }
+    uint8 restoredSpec = returning ? incomingProgress.Spec : GetActiveSpec();
     if (restoredSpec >= GetSpecsCount())
         restoredSpec = 0;
     SetActiveSpec(restoredSpec);
     SetByteValue(PLAYER_FIELD_BYTES, 2, restoredSpec);
+
+    uint8 maxPlayerLevel = uint8(sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL));
+    uint8 targetLevel = returning ? incomingProgress.Level : LegacyStartLevel(this);
+    uint32 targetXp = returning ? incomingProgress.Xp : 0;
+    float targetRest = returning ? incomingProgress.Rest : 0.f;
+    uint32 targetLevelTime = returning ? incomingProgress.LevelTime : 0;
+    if (!targetLevel)
+        targetLevel = 1;
+    if (targetLevel > maxPlayerLevel)
+        targetLevel = maxPlayerLevel;
+
+    // InitStatsForLevel clears ghost and GM flags. Put them back or a dead character is saved alive.
+    bool ghost = HasPlayerFlag(PLAYER_FLAGS_GHOST);
+    bool gamemaster = HasPlayerFlag(PLAYER_FLAGS_GM);
+    DeathState deathState = getDeathState();
+    uint32 playerBytes2 = GetUInt32Value(PLAYER_FIELD_BYTES2);
+
+    // One absolute GiveLevel, matching .character level. Not used for a restore.
+    if (!returning && targetLevel > 1 && GetLevel() != targetLevel)
+        GiveLevel(targetLevel);
+    if (GetLevel() != targetLevel)
+        SetLevel(targetLevel, false);
+
+    InitStatsForLevel(true);
+    SetUInt32Value(PLAYER_FIELD_BYTES2, playerBytes2);
+    if (gamemaster)
+        SetPlayerFlag(PLAYER_FLAGS_GM);
+    if (ghost)
+    {
+        SetPlayerFlag(PLAYER_FLAGS_GHOST);
+        m_deathState = deathState;
+        AddUnitState(UNIT_STATE_ISOLATED);
+    }
+
+    uint32 nextXp = GetUInt32Value(PLAYER_NEXT_LEVEL_XP);
+    if (!nextXp || targetXp >= nextXp)
+        targetXp = nextXp ? nextXp - 1 : 0;
+    SetUInt32Value(PLAYER_XP, targetXp);
+    SetRestBonus(targetRest);
+    m_Played_time[PLAYED_TIME_LEVEL] = targetLevelTime;
+    InitGlyphsForLevel();
 
     std::unordered_set<uint32> spellsBeforeRestore;
     for (auto const& itr : m_spells)
@@ -643,11 +876,7 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
     if (returning)
     {
         for (SkillSnap const& row : incoming.Skills)
-        {
-            uint16 value = row.Value ? row.Value : 1;
-            uint16 max = row.Max ? row.Max : value;
-            SetSkill(row.Id, 0, value, max);
-        }
+            ClampSkillToLevel(this, row.Id, row.Value);
         LearnDefaultSkills();
         for (SpellSnap const& row : incoming.Spells)
             addSpell(row.Id, row.SpecMask ? row.SpecMask : uint8(SPEC_MASK_ALL), true);
@@ -671,6 +900,8 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
             SetSkill(uint16(skillId), GetSkillStep(uint16(skillId)), maxSkill, maxSkill);
         LearnCustomSpells();
     }
+
+    UpdateSkillsForLevel();
 
     for (TalentSnap const& row : incoming.Talents)
         if (row.SpecMask)
@@ -775,63 +1006,8 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
     if (!HasSpell(674) && CanDualWield())
         SetCanDualWield(false);
     AutoUnequipOffhandIfNeed();
-
-    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
-    {
-        Item* item = GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-        if (!item)
-            continue;
-
-        ItemTemplate const* proto = item->GetTemplate();
-        if (!proto || !proto->AllowableClass || (proto->AllowableClass & getClassMask()))
-            continue;
-        if (item->IsNotEmptyBag())
-        {
-            LOG_ERROR("entities.player", "Player {} ({}) kept non-empty bag {} in slot {} after class change",
-                GetName(), GetGUID().ToString(), item->GetEntry(), uint32(slot));
-            continue;
-        }
-
-        ItemPosCountVec dest;
-        if (CanStoreItem(NULL_BAG, NULL_SLOT, dest, item, false) == EQUIP_ERR_OK)
-        {
-            RemoveItem(INVENTORY_SLOT_BAG_0, slot, true);
-            StoreItem(dest, item, true);
-            continue;
-        }
-
-        MoveItemFromInventory(INVENTORY_SLOT_BAG_0, slot, true);
-        CharacterDatabaseTransaction mailTrans = CharacterDatabase.BeginTransaction();
-        item->DeleteFromInventoryDB(mailTrans);
-        item->SaveToDB(mailTrans);
-        std::string subject = GetSession()->GetAcoreString(LANG_NOT_EQUIPPED_ITEM);
-        MailDraft(subject, "This item cannot be equipped by your new class.")
-            .AddItem(item)
-            .SendMailTo(mailTrans, this, MailSender(this, MAIL_STATIONERY_GM), MAIL_CHECK_MASK_COPIED);
-        CharacterDatabase.CommitTransaction(mailTrans);
-    }
-
-    if (isBeingLoaded())
-    {
-        // InitStatsForLevel clears ghost and GM flags. Aura load already restored them, so put them back
-        // before this login save or a dead character would be written alive.
-        bool ghost = HasPlayerFlag(PLAYER_FLAGS_GHOST);
-        bool gamemaster = HasPlayerFlag(PLAYER_FLAGS_GM);
-        DeathState deathState = getDeathState();
-        uint32 playerBytes2 = GetUInt32Value(PLAYER_FIELD_BYTES2);
-        InitStatsForLevel(true);
-        SetUInt32Value(PLAYER_FIELD_BYTES2, playerBytes2);
-        if (gamemaster)
-            SetPlayerFlag(PLAYER_FLAGS_GM);
-        if (ghost)
-        {
-            SetPlayerFlag(PLAYER_FLAGS_GHOST);
-            m_deathState = deathState;
-            AddUnitState(UNIT_STATE_ISOLATED);
-        }
-    }
-    else
-        InitDataForForm(false);
+    UnequipInvalidGear(this);
+    RestoreRememberedEquipment(this, newClass);
 
     SetPower(getPowerType(), GetMaxPower(getPowerType()));
 

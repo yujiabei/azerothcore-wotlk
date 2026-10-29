@@ -1022,7 +1022,7 @@ void AchievementMgr::UpdateAchievementCriteria(AchievementCriteriaTypes type, ui
                 if (AchievementCriteriaDataSet const* data = sAchievementMgr->GetCriteriaDataSet(achievementCriteria))
                     if (!data->Meets(GetPlayer(), unit))
                         continue;
-                SetCriteriaProgress(achievementCriteria, GetPlayer()->GetLevel());
+                SetCriteriaProgress(achievementCriteria, GetPlayer()->GetLevel(), PROGRESS_HIGHEST);
                 break;
             case ACHIEVEMENT_CRITERIA_TYPE_REACH_SKILL_LEVEL:
                 // update at loading or specific skill update

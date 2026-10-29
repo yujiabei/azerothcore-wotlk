@@ -1732,6 +1732,8 @@ public:
     // the caller commits that transaction together with SaveToDB.
     void ApplyPendingClassChange(CharacterDatabaseTransaction trans);
     bool ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans);
+    [[nodiscard]] uint8 GetHighestClassLevel() const;
+    [[nodiscard]] bool MeetsRidingLevelRequirement(SpellInfo const* spell) const;
     void LearnCustomSpells();
     void LearnDefaultSkills();
     void LearnDefaultSkill(uint32 skillId, uint16 rank);

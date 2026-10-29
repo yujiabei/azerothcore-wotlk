@@ -6711,6 +6711,9 @@ SpellCastResult Spell::CheckCast(bool strict, uint32* /*param1*/, uint32* /*para
                                     !transformSpellInfo->HasAttribute(SpellAttr0(SPELL_ATTR0_ALLOW_WHILE_MOUNTED | SPELL_ATTR0_AURA_IS_DEBUFF)))
                                 return SPELL_FAILED_NOT_SHAPESHIFT;
 
+                    if (m_caster->IsPlayer() && !m_caster->ToPlayer()->MeetsRidingLevelRequirement(m_spellInfo))
+                        return SPELL_FAILED_LEVEL_REQUIREMENT;
+
                     break;
                 }
             case SPELL_AURA_RANGED_ATTACK_POWER_ATTACKER_BONUS:
