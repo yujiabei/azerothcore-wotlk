@@ -170,6 +170,17 @@ void CharacterCache::UpdateCharacterLevel(ObjectGuid const& guid, uint8 level)
     itr->second.Level = level;
 }
 
+void CharacterCache::UpdateCharacterClass(ObjectGuid const& guid, uint8 playerClass)
+{
+    auto itr = _characterCacheStore.find(guid);
+    if (itr == _characterCacheStore.end())
+    {
+        return;
+    }
+
+    itr->second.Class = playerClass;
+}
+
 void CharacterCache::UpdateCharacterAccountId(ObjectGuid const& guid, uint32 accountId)
 {
     auto itr = _characterCacheStore.find(guid);

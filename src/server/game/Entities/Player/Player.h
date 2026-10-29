@@ -595,7 +595,8 @@ enum AtLoginFlags
     AT_LOGIN_RESET_AP          = 0x100,
     AT_LOGIN_RESET_ARENA       = 0x200,
     AT_LOGIN_CHECK_ACHIEVS     = 0x400,
-    AT_LOGIN_RESURRECT         = 0x800
+    AT_LOGIN_RESURRECT         = 0x800,
+    AT_LOGIN_CHANGE_CLASS      = 0x1000
 };
 
 typedef std::map<uint32, QuestStatusData> QuestStatusMap;
@@ -1727,6 +1728,10 @@ public:
     void learnSpell(uint32 spellId, bool temporary = false, bool learnFromSkill = false);
     void removeSpell(uint32 spellId, uint8 removeSpecMask, bool onlyTemporary);
     void resetSpells();
+    // Applies the pending logout class switch. Live fixups are appended to `trans`;
+    // the caller commits that transaction together with SaveToDB.
+    void ApplyPendingClassChange(CharacterDatabaseTransaction trans);
+    bool ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans);
     void LearnCustomSpells();
     void LearnDefaultSkills();
     void LearnDefaultSkill(uint32 skillId, uint16 rank);

@@ -2493,6 +2493,46 @@ Rate.Reputation.Gain.AV = 1
 ###################################################################################################
 
 ###################################################################################################
+# MULTICLASS
+#
+#    Multiclass.Enable
+#        Description: Allow .character changeclass. The swap runs at logout and keeps a
+#                     per-class snapshot of spells, talents, glyphs, actions, class skills,
+#                     the current pet, and class-restricted quests.
+#        Default:     1 - (Enabled)
+#                     0 - (Disabled)
+
+Multiclass.Enable = 1
+
+#
+#    Multiclass.SwitchCost
+#        Description: Copper charged when the swap succeeds. 0 disables the fee.
+#                     10000 copper is 1 gold.
+#        Default:     0
+
+Multiclass.SwitchCost = 0
+
+#
+#    Multiclass.SwitchCooldown
+#        Description: Seconds that must pass after a successful swap before another one.
+#                     0 disables the cooldown. The timer is kept on character_class_switch.
+#        Default:     0
+
+Multiclass.SwitchCooldown = 0
+
+#
+#    Multiclass.RequireCity
+#        Description: Online characters can queue a swap only in a capital city
+#                     (Stormwind, Orgrimmar, Dalaran, Shattrath, and the other faction capitals).
+#        Default:     1 - (Required)
+#                     0 - (Allowed anywhere out of combat)
+
+Multiclass.RequireCity = 1
+
+#
+###################################################################################################
+
+###################################################################################################
 # EXPERIENCE
 #
 #    MaxGroupXPDistance

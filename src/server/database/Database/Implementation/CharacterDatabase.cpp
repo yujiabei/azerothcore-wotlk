@@ -114,7 +114,7 @@ void CharacterDatabaseConnection::DoPrepareStatements()
     PrepareStatement(CHAR_REP_BREW_OF_THE_MONTH, "REPLACE INTO character_brew_of_the_month (guid, lastEventId) VALUES (?, ?)", CONNECTION_ASYNC);
     // End LoginQueryHolder content
 
-    PrepareStatement(CHAR_SEL_CHARACTER_ACTIONS_SPEC, "SELECT button, action, type FROM character_action WHERE guid = ? AND spec = ? ORDER BY button", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_CHARACTER_ACTIONS_SPEC, "SELECT button, action, type FROM character_action WHERE guid = ? AND spec = ? ORDER BY button", CONNECTION_BOTH);
     PrepareStatement(CHAR_SEL_MAILITEMS, "SELECT creatorGuid, giftCreatorGuid, count, duration, charges, flags, enchantments, randomPropertyId, durability, playedTime, text, item_guid, itemEntry, ii.owner_guid, m.id FROM mail_items mi INNER JOIN mail m ON mi.mail_id = m.id LEFT JOIN item_instance ii ON mi.item_guid = ii.guid WHERE m.receiver = ?", CONNECTION_BOTH);
     PrepareStatement(CHAR_SEL_AUCTION_ITEMS, "SELECT creatorGuid, giftCreatorGuid, count, duration, charges, flags, enchantments, randomPropertyId, durability, playedTime, text, itemguid, itemEntry FROM auctionhouse ah JOIN item_instance ii ON ah.itemguid = ii.guid", CONNECTION_SYNCH);
     PrepareStatement(CHAR_SEL_AUCTIONS, "SELECT id, houseid, itemguid, itemEntry, count, itemowner, buyoutprice, time, buyguid, lastbid, startbid, deposit FROM auctionhouse ah INNER JOIN item_instance ii ON ii.guid = ah.itemguid", CONNECTION_SYNCH);
@@ -574,13 +574,13 @@ void CharacterDatabaseConnection::DoPrepareStatements()
     PrepareStatement(CHAR_INS_PET_SPELL, "INSERT INTO pet_spell (guid, spell, active) VALUES (?, ?, ?)", CONNECTION_ASYNC);
     PrepareStatement(CHAR_INS_PET_AURA, "INSERT INTO pet_aura (guid, casterGuid, spell, effectMask, recalculateMask, stackCount, amount0, amount1, amount2, "
                      "base_amount0, base_amount1, base_amount2, maxDuration, remainTime, remainCharges) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", CONNECTION_ASYNC);
-    PrepareStatement(CHAR_SEL_CHAR_PETS, "SELECT id, entry, modelid, level, exp, Reactstate, slot, name, renamed, curhealth, curmana, curhappiness, abdata, savetime, CreatedBySpell, PetType FROM character_pet WHERE owner = ?", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_SEL_CHAR_PETS, "SELECT id, entry, modelid, level, exp, Reactstate, slot, name, renamed, curhealth, curmana, curhappiness, abdata, savetime, CreatedBySpell, PetType, class FROM character_pet WHERE owner = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_DEL_CHAR_PET_BY_OWNER, "DELETE FROM character_pet WHERE owner = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_UPD_CHAR_PET_NAME, "UPDATE character_pet SET name = ?, renamed = 1 WHERE owner = ? AND id = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_UPD_CHAR_PET_SLOT_BY_ID, "UPDATE character_pet SET slot = ? WHERE owner = ? AND id = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_DEL_CHAR_PET_BY_ID, "DELETE FROM character_pet WHERE id = ?", CONNECTION_ASYNC);
     PrepareStatement(CHAR_DEL_CHAR_PET_BY_SLOT, "DELETE FROM character_pet WHERE owner = ? AND (slot = ? OR slot > ?)", CONNECTION_ASYNC);
-    PrepareStatement(CHAR_REP_CHAR_PET, "REPLACE INTO character_pet (id, entry, owner, modelid, CreatedBySpell, PetType, level, exp, Reactstate, name, renamed, slot, curhealth, curmana, curhappiness, savetime, abdata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", CONNECTION_ASYNC);
+    PrepareStatement(CHAR_REP_CHAR_PET, "REPLACE INTO character_pet (id, entry, owner, modelid, CreatedBySpell, PetType, level, exp, Reactstate, name, renamed, slot, curhealth, curmana, curhappiness, savetime, abdata, class) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", CONNECTION_ASYNC);
 
     // PvPstats
     PrepareStatement(CHAR_SEL_PVPSTATS_MAXID, "SELECT MAX(id) FROM pvpstats_battlegrounds", CONNECTION_SYNCH);
@@ -642,6 +642,60 @@ void CharacterDatabaseConnection::DoPrepareStatements()
     // By providing the realm ID explicitly, this ensures that mysql reverse proxy will use
     // correct realm database for the transaction.
     PrepareStatement(CHAR_NO_OP_PROVIDE_REALM_CONTEXT, "SELECT ? AS no_op", CONNECTION_ASYNC);
+
+    PrepareStatement(CHAR_SEL_CLASS_SWITCH,
+        "SELECT target_class, requested_at, last_switch_at FROM character_class_switch WHERE guid = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_REP_CLASS_SWITCH_REQUEST,
+        "INSERT INTO character_class_switch (guid, target_class, requested_at, last_switch_at) VALUES (?, ?, ?, 0) "
+        "ON DUPLICATE KEY UPDATE target_class = VALUES(target_class), requested_at = VALUES(requested_at)", CONNECTION_BOTH);
+    PrepareStatement(CHAR_UPD_CLASS_SWITCH_COMPLETE,
+        "UPDATE character_class_switch SET target_class = 0, last_switch_at = ? WHERE guid = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_UPD_CLASS_SWITCH_CLEAR,
+        "UPDATE character_class_switch SET target_class = 0 WHERE guid = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_SEL_CLASS_PROGRESS,
+        "SELECT level, xp, rest_bonus, active_spec, level_play_time, current_pet_id "
+        "FROM character_class_progress WHERE guid = ? AND class = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_REP_CLASS_PROGRESS,
+        "REPLACE INTO character_class_progress (guid, class, level, xp, rest_bonus, active_spec, level_play_time, current_pet_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", CONNECTION_BOTH);
+    PrepareStatement(CHAR_DEL_CLASS_SPELL_BY_CLASS, "DELETE FROM character_class_spell WHERE guid = ? AND class = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_INS_CLASS_SPELL,
+        "INSERT INTO character_class_spell (guid, class, spell, specMask) VALUES (?, ?, ?, ?)", CONNECTION_BOTH);
+    PrepareStatement(CHAR_SEL_CLASS_SPELL,
+        "SELECT spell, specMask FROM character_class_spell WHERE guid = ? AND class = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_DEL_CLASS_TALENT_BY_CLASS, "DELETE FROM character_class_talent WHERE guid = ? AND class = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_INS_CLASS_TALENT,
+        "INSERT INTO character_class_talent (guid, class, spell, specMask) VALUES (?, ?, ?, ?)", CONNECTION_BOTH);
+    PrepareStatement(CHAR_SEL_CLASS_TALENT,
+        "SELECT spell, specMask FROM character_class_talent WHERE guid = ? AND class = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_DEL_CLASS_GLYPH_BY_CLASS, "DELETE FROM character_class_glyph WHERE guid = ? AND class = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_INS_CLASS_GLYPH,
+        "INSERT INTO character_class_glyph (guid, class, talentGroup, glyph1, glyph2, glyph3, glyph4, glyph5, glyph6) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", CONNECTION_BOTH);
+    PrepareStatement(CHAR_SEL_CLASS_GLYPH,
+        "SELECT talentGroup, glyph1, glyph2, glyph3, glyph4, glyph5, glyph6 "
+        "FROM character_class_glyph WHERE guid = ? AND class = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_DEL_CLASS_ACTION_BY_CLASS, "DELETE FROM character_class_action WHERE guid = ? AND class = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_INS_CLASS_ACTION,
+        "INSERT INTO character_class_action (guid, class, spec, button, action, type) VALUES (?, ?, ?, ?, ?, ?)", CONNECTION_BOTH);
+    PrepareStatement(CHAR_SEL_CLASS_ACTION,
+        "SELECT spec, button, action, type FROM character_class_action WHERE guid = ? AND class = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_DEL_CLASS_SKILL_BY_CLASS, "DELETE FROM character_class_skill WHERE guid = ? AND class = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_INS_CLASS_SKILL,
+        "INSERT INTO character_class_skill (guid, class, skill, value, max) VALUES (?, ?, ?, ?, ?)", CONNECTION_BOTH);
+    PrepareStatement(CHAR_SEL_CLASS_SKILL,
+        "SELECT skill, value, max FROM character_class_skill WHERE guid = ? AND class = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_DEL_CLASS_QUEST_BY_CLASS, "DELETE FROM character_class_quest WHERE guid = ? AND class = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_INS_CLASS_QUEST,
+        "INSERT INTO character_class_quest (guid, class, quest, status, explored, timer, mobcount1, mobcount2, mobcount3, mobcount4, "
+        "itemcount1, itemcount2, itemcount3, itemcount4, itemcount5, itemcount6, playercount) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", CONNECTION_BOTH);
+    PrepareStatement(CHAR_SEL_CLASS_QUEST,
+        "SELECT quest, status, explored, timer, mobcount1, mobcount2, mobcount3, mobcount4, "
+        "itemcount1, itemcount2, itemcount3, itemcount4, itemcount5, itemcount6, playercount "
+        "FROM character_class_quest WHERE guid = ? AND class = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_UPD_CHAR_PET_CLASS_SLOT,
+        "UPDATE character_pet SET slot = ?, class = ? WHERE owner = ? AND id = ?", CONNECTION_BOTH);
 }
 
 CharacterDatabaseConnection::CharacterDatabaseConnection(MySQLConnectionInfo& connInfo) : MySQLConnection(connInfo)

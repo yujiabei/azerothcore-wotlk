@@ -858,6 +858,11 @@ void WorldSession::HandlePlayerLoginFromDB(LoginQueryHolder const& holder)
                 pCurrChar->SetInGuild(guildId);
                 pCurrChar->SetRank(member->GetRankId());
                 guild->SendLoginInfo(this);
+                // LoadFromDB runs before the player is in the guild, so a login-time class
+                // swap cannot refresh the roster there.
+                if (member->GetClass() != pCurrChar->getClass())
+                    if (Guild::Member* roster = guild->GetMember(pCurrChar->GetGUID()))
+                        roster->SetStats(pCurrChar);
             }
             else
             {
