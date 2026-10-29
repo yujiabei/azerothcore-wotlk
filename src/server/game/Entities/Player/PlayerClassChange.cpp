@@ -1203,6 +1203,7 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
 
     LOG_INFO("entities.player", "Player {} ({}) changed class from {} to {}",
         GetName(), GetGUID().ToString(), uint32(oldClass), uint32(newClass));
+    ApplyRetainedSpells();
     return true;
 }
 

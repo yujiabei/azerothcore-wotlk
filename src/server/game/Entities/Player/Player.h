@@ -43,6 +43,7 @@
 #include "WorldSession.h"
 #include <set>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 struct CreatureTemplate;
@@ -54,6 +55,7 @@ class AchievementMgr;
 class ReputationMgr;
 class Channel;
 class CharacterCreateInfo;
+class ChatHandler;
 class Creature;
 class DynamicObject;
 class Group;
@@ -1732,6 +1734,13 @@ public:
     // the caller commits that transaction together with SaveToDB.
     void ApplyPendingClassChange(CharacterDatabaseTransaction trans);
     bool ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans);
+    // Temporary cross-class spells. They are never written to character_spell.
+    void ApplyRetainedSpells(ChatHandler* handler = nullptr, bool announce = true);
+    void SetRetainActivesSuppressed(bool suppressed);
+    bool AddRetainedSpell(uint32 spellId, bool synergy, int32 slot, ChatHandler* handler);
+    bool RemoveRetainedSpell(uint32 spellId, ChatHandler* handler);
+    bool ClearRetainedSpells(int32 sourceClass, ChatHandler* handler);
+    void ListRetainedSpells(ChatHandler* handler);
     [[nodiscard]] uint8 GetHighestClassLevel() const;
     void RefreshHighestClassLevel();
     void LoadClassDailyBonusTime();
@@ -2897,6 +2906,8 @@ protected:
     uint32 m_Glyphs[MAX_TALENT_SPECS][MAX_GLYPH_SLOT_INDEX];
 
     ActionButtonList m_actionButtons;
+    std::unordered_set<uint32> m_retainedApplied;
+    bool m_retainActivesSuppressed = false;
 
     float m_auraBaseFlatMod[BASEMOD_END];
     float m_auraBasePctMod[BASEMOD_END];
@@ -3103,6 +3114,11 @@ private:
     bool _expectingChangeTransport;
     uint32 _pendingFlightChangeCounter;
     uint32 _mapChangeOrderCounter;
+
+    bool ChargeRetainChange(ChatHandler* handler);
+    void PlaceRetainedActionButtons();
+    void EnsureRetainedButton(uint32 spellId);
+    void StripRetainedButtons(uint32 spellId);
 };
 
 void AddItemsSetItem(Player* player, Item* item);
