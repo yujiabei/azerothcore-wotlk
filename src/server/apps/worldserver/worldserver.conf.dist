@@ -2588,6 +2588,17 @@ Multiclass.Riding.Level.300 = 70
 Multiclass.Riding.Level.ColdWeather = 77
 
 #
+#    Multiclass.AllowDeathKnight
+#        Description: Allows a class change whose source or target is Death Knight when that
+#                     race has a playercreateinfo row for the class.
+#                     The account's one-death-knight character creation limit is not checked
+#                     and is not consumed.
+#                     0 rejects the command and cancels a pending change.
+#        Default:     1
+
+Multiclass.AllowDeathKnight = 1
+
+#
 ###################################################################################################
 
 ###################################################################################################
