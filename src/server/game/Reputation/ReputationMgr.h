@@ -125,6 +125,8 @@ public:                                                 // modifiers
     void SetInactive(RepListID repListID, bool on);
 
     void ApplyForceReaction(uint32 faction_id, ReputationRank rank, bool apply);
+    // Keeps the displayed standing when a class change moves a faction's base reputation.
+    void ApplyClassBaseChange(uint8 oldClass, uint8 newClass);
 
     //! Public for chat command needs
     bool SetOneFactionReputation(FactionEntry const* factionEntry, float standing, bool incremental, Optional<ReputationRank> repMaxCap = { });

@@ -524,6 +524,10 @@ static uint8 PetClassForSave(Player const* owner, uint32 petNumber)
         if (slot && tagged(*slot))
             return slot->Class;
 
+    for (PetStable::PetInfo const& info : stable->ForeignPets)
+        if (tagged(info))
+            return info.Class;
+
     return owner->getClass();
 }
 
@@ -583,6 +587,7 @@ void Pet::SavePetToDB(PetSaveMode mode)
             stmt->SetData(0, ownerLowGUID);
             stmt->SetData(1, uint8(PET_SAVE_AS_CURRENT));
             stmt->SetData(2, uint8(PET_SAVE_LAST_STABLE_SLOT));
+            stmt->SetData(3, owner->getClass());
             trans->Append(stmt);
         }
 

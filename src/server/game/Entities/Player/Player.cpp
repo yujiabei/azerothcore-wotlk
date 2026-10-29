@@ -16531,7 +16531,10 @@ void Player::_LoadPetStable(uint8 petStableSlots, PreparedQueryResult result)
             petInfo.Type = PetType(fields[15].Get<uint8>());
             petInfo.Class = fields[16].Get<uint8>();
 
-            if (slot == PET_SAVE_AS_CURRENT)
+            // Another class's pets stay out of the stable and out of the summon list.
+            if (petInfo.Class && petInfo.Class != getClass())
+                m_petStable->ForeignPets.push_back(std::move(petInfo));
+            else if (slot == PET_SAVE_AS_CURRENT)
                 m_petStable->CurrentPet = std::move(petInfo);
             else if (slot >= PET_SAVE_FIRST_STABLE_SLOT && slot <= PET_SAVE_LAST_STABLE_SLOT)
                 m_petStable->StabledPets[slot - 1] = std::move(petInfo);

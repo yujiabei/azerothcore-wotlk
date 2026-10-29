@@ -614,15 +614,66 @@ public:
         if (!player)
             return false;
 
-        uint8 currentClass = 0;
-        uint8 race = 0;
         Player* online = player->GetConnectedPlayer();
         if (online)
         {
-            currentClass = online->getClass();
-            race = online->getRace(true);
+            ClassChangeRequestStatus status = online->RequestClassChange(newClass);
+            switch (status.Result)
+            {
+                case CLASS_CHANGE_OK:
+                {
+                    handler->PSendSysMessage("Class change to {} is queued. Logging out to apply it.", className);
+                    WorldSession* session = online->GetSession();
+                    if (session && handler->GetSession() != session)
+                        ChatHandler(session).PSendSysMessage(
+                            "Class change to {} is queued. Logging out to apply it.", className);
+                    if (session)
+                        session->LogoutPlayer(true);
+                    return true;
+                }
+                case CLASS_CHANGE_DISABLED:
+                    handler->SendSysMessage("Class change is disabled.");
+                    return false;
+                case CLASS_CHANGE_SAME:
+                    handler->SendSysMessage("That character is already this class.");
+                    return false;
+                case CLASS_CHANGE_RACE:
+                    handler->SendSysMessage("This race cannot be that class.");
+                    return false;
+                case CLASS_CHANGE_DEATH_KNIGHT:
+                    handler->SendSysMessage("Death Knight class changes are disabled.");
+                    return false;
+                case CLASS_CHANGE_BOT:
+                    handler->SendSysMessage("Bots cannot change class.");
+                    return false;
+                case CLASS_CHANGE_PENDING:
+                    handler->SendSysMessage("A class change is already pending. Log out to finish it.");
+                    return false;
+                case CLASS_CHANGE_COOLDOWN:
+                    handler->PSendSysMessage("You must wait {} seconds before changing class again.", status.Extra);
+                    return false;
+                case CLASS_CHANGE_COMBAT:
+                    handler->SendSysMessage("You cannot change class while in combat.");
+                    return false;
+                case CLASS_CHANGE_BATTLEGROUND:
+                    handler->SendSysMessage("You cannot change class in a battleground or arena.");
+                    return false;
+                case CLASS_CHANGE_CITY:
+                    handler->SendSysMessage("Class change is only allowed in a capital city.");
+                    return false;
+                case CLASS_CHANGE_MONEY:
+                    handler->SendSysMessage("You do not have enough money to change class.");
+                    return false;
+                default:
+                    handler->SendSysMessage("Unknown class. Use an id or warrior, paladin, hunter, rogue, priest, "
+                        "deathknight, shaman, mage, warlock, druid.");
+                    return false;
+            }
         }
-        else if (CharacterCacheEntry const* entry = sCharacterCache->GetCharacterCacheByGuid(player->GetGUID()))
+
+        uint8 currentClass = 0;
+        uint8 race = 0;
+        if (CharacterCacheEntry const* entry = sCharacterCache->GetCharacterCacheByGuid(player->GetGUID()))
         {
             currentClass = entry->Class;
             race = entry->Race;
@@ -652,8 +703,7 @@ public:
             return false;
         }
 
-        if (IsRandomBotGuid(player->GetGUID().GetCounter())
-            || (online && online->GetSession() && online->GetSession()->IsBot()))
+        if (IsRandomBotGuid(player->GetGUID().GetCounter()))
         {
             handler->SendSysMessage("Bots cannot change class.");
             return false;
@@ -683,61 +733,11 @@ public:
             }
         }
 
-        if (online)
-        {
-            if (online->IsInCombat())
-            {
-                handler->SendSysMessage("You cannot change class while in combat.");
-                return false;
-            }
-
-            if (online->InBattleground() || online->InArena())
-            {
-                handler->SendSysMessage("You cannot change class in a battleground or arena.");
-                return false;
-            }
-
-            if (sConfigMgr->GetOption<bool>("Multiclass.RequireCity", true))
-            {
-                AreaTableEntry const* zone = sAreaTableStore.LookupEntry(online->GetZoneId());
-                if (!zone || (zone->flags & AREA_FLAG_CAPITAL) == 0)
-                {
-                    handler->SendSysMessage("Class change is only allowed in a capital city.");
-                    return false;
-                }
-            }
-
-            uint32 cost = sConfigMgr->GetOption<uint32>("Multiclass.SwitchCost", 0);
-            if (cost && !online->HasEnoughMoney(cost))
-            {
-                handler->SendSysMessage("You do not have enough money to change class.");
-                return false;
-            }
-        }
-
         stmt = CharacterDatabase.GetPreparedStatement(CHAR_REP_CLASS_SWITCH_REQUEST);
         stmt->SetData(0, guid);
         stmt->SetData(1, newClass);
         stmt->SetData(2, now);
         CharacterDatabase.DirectExecute(stmt);
-
-        if (online)
-        {
-            online->SetAtLoginFlag(AT_LOGIN_CHANGE_CLASS);
-            CharacterDatabasePreparedStatement* flagStmt =
-                CharacterDatabase.GetPreparedStatement(CHAR_UPD_ADD_AT_LOGIN_FLAG);
-            flagStmt->SetData(0, uint16(AT_LOGIN_CHANGE_CLASS));
-            flagStmt->SetData(1, guid);
-            CharacterDatabase.Execute(flagStmt);
-
-            handler->PSendSysMessage("Class change to {} is queued. Logging out to apply it.", className);
-            WorldSession* session = online->GetSession();
-            if (handler->GetSession() != session)
-                ChatHandler(session).PSendSysMessage(
-                    "Class change to {} is queued. Logging out to apply it.", className);
-            session->LogoutPlayer(true);
-            return true;
-        }
 
         CharacterDatabasePreparedStatement* flagStmt =
             CharacterDatabase.GetPreparedStatement(CHAR_UPD_ADD_AT_LOGIN_FLAG);
