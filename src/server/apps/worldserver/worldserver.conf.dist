@@ -2530,6 +2530,64 @@ Multiclass.SwitchCooldown = 0
 Multiclass.RequireCity = 1
 
 #
+#    Multiclass.LegacyMinLevel
+#        Description: A class with no saved progress starts at level 1 when the character's
+#                     highest class level is below this. At or above it, the new class starts
+#                     at floor(highest * Multiclass.LegacyLevelRatio), capped by
+#                     Multiclass.LegacyLevelCap. One GiveLevel grant is used, not a restore.
+#        Default:     20
+
+Multiclass.LegacyMinLevel = 20
+
+#
+#    Multiclass.LegacyLevelRatio
+#        Description: Fraction of the character's highest class level given to a brand new class.
+#                     0 disables the boost (the new class starts at 1).
+#        Default:     0.5
+
+Multiclass.LegacyLevelRatio = 0.5
+
+#
+#    Multiclass.LegacyLevelCap
+#        Description: Highest level a brand new class can inherit. 0 disables the cap.
+#        Default:     60
+
+Multiclass.LegacyLevelCap = 60
+
+#
+#    Multiclass.ArenaMaxLevelGap
+#        Description: Refuse an arena queue when the current class level is more than this many
+#                     levels below the character's highest class level. 0 disables the gate.
+#        Default:     10
+
+Multiclass.ArenaMaxLevelGap = 10
+
+#
+#    Multiclass.Riding.Level.75
+#    Multiclass.Riding.Level.150
+#    Multiclass.Riding.Level.225
+#    Multiclass.Riding.Level.300
+#        Description: Current class level required to cast a mount whose riding rank is
+#                     75, 150, 225, or 300. Rank comes from SkillLineAbility when the spell
+#                     is on the Riding line, otherwise from the mount speed aura.
+#                     0 disables that rank's check.
+#        Default:     20, 40, 60, 70
+
+Multiclass.Riding.Level.75 = 20
+Multiclass.Riding.Level.150 = 40
+Multiclass.Riding.Level.225 = 60
+Multiclass.Riding.Level.300 = 70
+
+#
+#    Multiclass.Riding.Level.ColdWeather
+#        Description: Current class level required to fly in Northrend (Cold Weather Flying).
+#                     Knowing spell 54197 is not enough while this class is below the level.
+#                     0 disables the check.
+#        Default:     77
+
+Multiclass.Riding.Level.ColdWeather = 77
+
+#
 ###################################################################################################
 
 ###################################################################################################

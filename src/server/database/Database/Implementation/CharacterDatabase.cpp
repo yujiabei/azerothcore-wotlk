@@ -696,6 +696,14 @@ void CharacterDatabaseConnection::DoPrepareStatements()
         "FROM character_class_quest WHERE guid = ? AND class = ?", CONNECTION_BOTH);
     PrepareStatement(CHAR_UPD_CHAR_PET_CLASS_SLOT,
         "UPDATE character_pet SET slot = ?, class = ? WHERE owner = ? AND id = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_SEL_CLASS_MAX_LEVEL,
+        "SELECT MAX(level) FROM character_class_progress WHERE guid = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_DEL_CLASS_EQUIPMENT_BY_CLASS,
+        "DELETE FROM character_class_equipment WHERE guid = ? AND class = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_INS_CLASS_EQUIPMENT,
+        "INSERT INTO character_class_equipment (guid, class, slot, item) VALUES (?, ?, ?, ?)", CONNECTION_BOTH);
+    PrepareStatement(CHAR_SEL_CLASS_EQUIPMENT,
+        "SELECT slot, item FROM character_class_equipment WHERE guid = ? AND class = ? ORDER BY slot", CONNECTION_BOTH);
 }
 
 CharacterDatabaseConnection::CharacterDatabaseConnection(MySQLConnectionInfo& connInfo) : MySQLConnection(connInfo)
