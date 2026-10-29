@@ -75,6 +75,13 @@ enum ShamanSpells
     SPELL_SHAMAN_TOTEMIC_POWER_ATTACK_POWER     = 28826,
     SPELL_SHAMAN_TOTEMIC_POWER_ARMOR            = 28827,
     SPELL_SHAMAN_WINDFURY_WEAPON_R1             = 8232,
+    SPELL_SHAMAN_WINDFURY_WEAPON_R2             = 8235,
+    SPELL_SHAMAN_WINDFURY_WEAPON_R3             = 10486,
+    SPELL_SHAMAN_WINDFURY_WEAPON_R4             = 16362,
+    SPELL_SHAMAN_WINDFURY_WEAPON_R5             = 25505,
+    SPELL_SHAMAN_WINDFURY_WEAPON_R6             = 58801,
+    SPELL_SHAMAN_WINDFURY_WEAPON_R7             = 58803,
+    SPELL_SHAMAN_WINDFURY_WEAPON_R8             = 58804,
     SPELL_SHAMAN_WINDFURY_ATTACK_MH             = 25504,
     SPELL_SHAMAN_WINDFURY_ATTACK_OH             = 33750,
     SPELL_SHAMAN_ENERGY_SURGE                   = 40465,
@@ -2111,6 +2118,13 @@ class spell_sha_windfury_weapon : public AuraScript
         return ValidateSpellInfo(
         {
             SPELL_SHAMAN_WINDFURY_WEAPON_R1,
+            SPELL_SHAMAN_WINDFURY_WEAPON_R2,
+            SPELL_SHAMAN_WINDFURY_WEAPON_R3,
+            SPELL_SHAMAN_WINDFURY_WEAPON_R4,
+            SPELL_SHAMAN_WINDFURY_WEAPON_R5,
+            SPELL_SHAMAN_WINDFURY_WEAPON_R6,
+            SPELL_SHAMAN_WINDFURY_WEAPON_R7,
+            SPELL_SHAMAN_WINDFURY_WEAPON_R8,
             SPELL_SHAMAN_WINDFURY_ATTACK_MH,
             SPELL_SHAMAN_WINDFURY_ATTACK_OH
         });
@@ -2153,10 +2167,46 @@ class spell_sha_windfury_weapon : public AuraScript
         uint8 slot = item->GetSlot();
         bool mainHand = slot == EQUIPMENT_SLOT_MAINHAND;
         uint32 spellId = mainHand ? SPELL_SHAMAN_WINDFURY_ATTACK_MH : SPELL_SHAMAN_WINDFURY_ATTACK_OH;
+        WeaponAttackType attType = mainHand ? BASE_ATTACK : OFF_ATTACK;
 
-        SpellInfo const* windfurySpellInfo = sSpellMgr->GetSpellInfo(SPELL_SHAMAN_WINDFURY_WEAPON_R1);
-        int32 bonus = windfurySpellInfo ? windfurySpellInfo->Effects[EFFECT_1].CalcValue(player) : 0;
-        bonus = int32(bonus * player->GetAttackTime(mainHand ? BASE_ATTACK : OFF_ATTACK) / 1000.f);
+        uint32 windfurySpellId = 0;
+        switch (item->GetEnchantmentId(TEMP_ENCHANTMENT_SLOT))
+        {
+            case 283:
+                windfurySpellId = SPELL_SHAMAN_WINDFURY_WEAPON_R1;
+                break;
+            case 284:
+                windfurySpellId = SPELL_SHAMAN_WINDFURY_WEAPON_R2;
+                break;
+            case 525:
+                windfurySpellId = SPELL_SHAMAN_WINDFURY_WEAPON_R3;
+                break;
+            case 1669:
+                windfurySpellId = SPELL_SHAMAN_WINDFURY_WEAPON_R4;
+                break;
+            case 2636:
+                windfurySpellId = SPELL_SHAMAN_WINDFURY_WEAPON_R5;
+                break;
+            case 3785:
+                windfurySpellId = SPELL_SHAMAN_WINDFURY_WEAPON_R6;
+                break;
+            case 3786:
+                windfurySpellId = SPELL_SHAMAN_WINDFURY_WEAPON_R7;
+                break;
+            case 3787:
+                windfurySpellId = SPELL_SHAMAN_WINDFURY_WEAPON_R8;
+                break;
+            default:
+                return;
+        }
+
+        SpellInfo const* windfurySpellInfo = sSpellMgr->GetSpellInfo(windfurySpellId);
+        if (!windfurySpellInfo)
+            return;
+
+        // Effect 1 is bonus attack power. Extra damage is that AP / 14 * weapon speed.
+        int32 bonusAttackPower = windfurySpellInfo->Effects[EFFECT_1].CalcValue(player);
+        int32 bonus = int32(bonusAttackPower / 14.0f * player->GetAttackTime(attType) / 1000.0f);
 
         player->CastCustomSpell(spellId, SPELLVALUE_BASE_POINT0, bonus, target, true, item, aurEff);
         player->CastCustomSpell(spellId, SPELLVALUE_BASE_POINT0, bonus, target, true, item, aurEff);
