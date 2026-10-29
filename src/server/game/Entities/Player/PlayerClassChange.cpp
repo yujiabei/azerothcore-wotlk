@@ -1286,6 +1286,8 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
     }
 
     UpdateSkillsForLevel();
+    // Mastery aura and the weapon-skill floor. One call so the switch body stays small.
+    ApplyMulticlassClassEnter(oldClass);
 
     for (TalentSnap const& row : incoming.Talents)
         if (row.SpecMask)

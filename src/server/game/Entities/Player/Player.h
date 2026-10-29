@@ -43,6 +43,7 @@
 #include "WorldSession.h"
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -1774,6 +1775,8 @@ public:
     void CachePlayerbotFlag();
     [[nodiscard]] bool GainsMulticlassXpBonus() const;
     uint32 ClaimClassDailyBonus();
+    // Removes the previous class mastery aura, then applies the weapon-skill floor and the new aura.
+    void ApplyMulticlassClassEnter(uint8 oldClass);
     [[nodiscard]] bool MeetsRidingLevelRequirement(SpellInfo const* spell) const;
     void LearnCustomSpells();
     void LearnDefaultSkills();
@@ -3050,6 +3053,18 @@ private:
     uint32 m_classDailyBonusAt;
     // Session bot flag plus the playerbots table, read once at login.
     bool m_isPlayerbot;
+    // Unix time when the class being played reached the server level cap. 0 if it has not.
+    uint32 m_classMasteredAt;
+    // Highest weapon-skill value stored for every class except the one being played.
+    std::unordered_map<uint32, uint16> m_otherClassWeaponSkill;
+
+    void LoadOtherClassWeaponSkills();
+    void ApplyWeaponSkillFloor();
+    void LoadClassMastery();
+    void GrantClassMastery();
+    void ApplyMasteryAura();
+    void RemoveMasteryAura(uint8 classId);
+    [[nodiscard]] uint32 MulticlassClassOption(char const* prefix, uint8 classId) const;
 
     // internal common parts for CanStore/StoreItem functions
     InventoryResult CanStoreItem_InSpecificSlot(uint8 bag, uint8 slot, ItemPosCountVec& dest, ItemTemplate const* pProto, uint32& count, bool swap, Item* pSrcItem) const;

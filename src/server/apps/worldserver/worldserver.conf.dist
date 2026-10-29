@@ -2631,6 +2631,55 @@ Multiclass.CatchUpAppliesToRest = 0
 Multiclass.DailyBonusXpPercentOfLevel = 25
 
 #
+#    Multiclass.MasteryTitle.<Class>
+#        Description: CharTitles.dbc id granted when this class reaches the server max level
+#                     through GiveLevel (the same id .titles add uses, not the title bit).
+#                     0 grants nothing. Restoring a level or a legacy grant below the cap
+#                     does not count. The title stays in knownTitles across class switches.
+#                     A title that is not in the server and client DBC will not display.
+#                     Custom titles need a client DBC patch; this config does not add one.
+#        Default:     0
+
+Multiclass.MasteryTitle.Warrior = 0
+Multiclass.MasteryTitle.Paladin = 0
+Multiclass.MasteryTitle.Hunter = 0
+Multiclass.MasteryTitle.Rogue = 0
+Multiclass.MasteryTitle.Priest = 0
+Multiclass.MasteryTitle.DeathKnight = 0
+Multiclass.MasteryTitle.Shaman = 0
+Multiclass.MasteryTitle.Mage = 0
+Multiclass.MasteryTitle.Warlock = 0
+Multiclass.MasteryTitle.Druid = 0
+
+#
+#    Multiclass.MasteryAura.<Class>
+#        Description: Spell applied while playing a mastered class, and removed on switch-out.
+#                     0 applies nothing. The spell must already exist and be permanent, with
+#                     only transform, scale, or clone-caster auras. Any other spell is ignored.
+#        Default:     0
+
+Multiclass.MasteryAura.Warrior = 0
+Multiclass.MasteryAura.Paladin = 0
+Multiclass.MasteryAura.Hunter = 0
+Multiclass.MasteryAura.Rogue = 0
+Multiclass.MasteryAura.Priest = 0
+Multiclass.MasteryAura.DeathKnight = 0
+Multiclass.MasteryAura.Shaman = 0
+Multiclass.MasteryAura.Mage = 0
+Multiclass.MasteryAura.Warlock = 0
+Multiclass.MasteryAura.Druid = 0
+
+#
+#    Multiclass.WeaponSkillInheritRatio
+#        Description: When a class is entered or levels up, each weapon skill that class can
+#                     learn is raised to at least floor(highest other class snapshot × this).
+#                     The result is clamped to the current level × 5 cap and never lowers a
+#                     skill. 0 disables the floor. Snapshots are read at login and on switch.
+#        Default:     0.5
+
+Multiclass.WeaponSkillInheritRatio = 0.5
+
+#
 #    Multiclass.Retain.Enable
 #        Description: Cross-class retained spells. 0 rejects the commands and removes
 #                     spells already applied for this session.

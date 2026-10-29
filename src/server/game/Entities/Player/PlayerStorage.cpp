@@ -5749,6 +5749,9 @@ bool Player::LoadFromDB(ObjectGuid playerGuid, CharacterDatabaseQueryHolder cons
     }
     // After a switch the new class row is committed, so the cache includes its level.
     RefreshHighestClassLevel();
+    LoadOtherClassWeaponSkills();
+    ApplyWeaponSkillFloor();
+    LoadClassMastery();
     ApplyRetainedSpells();
     return true;
 }
