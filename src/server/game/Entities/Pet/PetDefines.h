@@ -230,6 +230,7 @@ public:
         ReactStates ReactState = ReactStates(0);
         PetType Type = MAX_PET_TYPE;
         bool WasRenamed = false;
+        uint8 Class = 0;
     };
 
     Optional<PetInfo> CurrentPet;                                   // PET_SAVE_AS_CURRENT

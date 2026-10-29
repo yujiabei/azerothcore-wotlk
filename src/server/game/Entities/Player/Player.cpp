@@ -16316,6 +16316,7 @@ void Player::_LoadPetStable(uint8 petStableSlots, PreparedQueryResult result)
             petInfo.LastSaveTime = fields[13].Get<uint32>();
             petInfo.CreatedBySpellId = fields[14].Get<uint32>();
             petInfo.Type = PetType(fields[15].Get<uint8>());
+            petInfo.Class = fields[16].Get<uint8>();
 
             if (slot == PET_SAVE_AS_CURRENT)
                 m_petStable->CurrentPet = std::move(petInfo);

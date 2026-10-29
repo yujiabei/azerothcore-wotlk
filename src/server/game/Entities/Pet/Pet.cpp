@@ -499,6 +499,34 @@ bool Pet::LoadPetFromDB(Player* owner, uint32 petEntry, uint32 petnumber, bool c
     return true;
 }
 
+static uint8 PetClassForSave(Player const* owner, uint32 petNumber)
+{
+    if (!owner)
+        return 0;
+
+    PetStable const* stable = owner->GetPetStable();
+    if (!stable)
+        return owner->getClass();
+
+    auto const tagged = [petNumber](PetStable::PetInfo const& info)
+    {
+        return info.PetNumber == petNumber && info.Class != 0;
+    };
+
+    if (stable->CurrentPet && tagged(*stable->CurrentPet))
+        return stable->CurrentPet->Class;
+
+    for (PetStable::PetInfo const& info : stable->UnslottedPets)
+        if (tagged(info))
+            return info.Class;
+
+    for (Optional<PetStable::PetInfo> const& slot : stable->StabledPets)
+        if (slot && tagged(*slot))
+            return slot->Class;
+
+    return owner->getClass();
+}
+
 void Pet::SavePetToDB(PetSaveMode mode)
 {
     // not save not player pets
@@ -584,6 +612,7 @@ void Pet::SavePetToDB(PetSaveMode mode)
         stmt->SetData(14, GetPower(POWER_HAPPINESS));
         stmt->SetData(15, GameTime::GetGameTime().count());
         stmt->SetData(16, actionBar);
+        stmt->SetData(17, PetClassForSave(owner, m_charmInfo->GetPetNumber()));
 
         trans->Append(stmt);
         CharacterDatabase.CommitTransaction(trans);
