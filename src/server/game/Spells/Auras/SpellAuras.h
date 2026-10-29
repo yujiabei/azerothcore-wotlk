@@ -135,7 +135,8 @@ public:
     void RefreshDuration(bool withMods = false);
     void RefreshTimers(bool periodicReset = false);
     void RefreshTimersWithMods();
-    bool IsExpired() const { return !GetDuration();}
+    // Duration -1 is infinite. Zero and every other negative value have elapsed.
+    bool IsExpired() const { return m_duration != -1 && m_duration <= 0; }
     bool IsPermanent() const { return GetMaxDuration() == -1; }
 
     uint8 GetCharges() const { return m_procCharges; }

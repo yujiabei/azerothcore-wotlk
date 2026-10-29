@@ -205,7 +205,16 @@ void DynamicObject::SetDuration(int32 newDuration)
 
 void DynamicObject::Delay(int32 delaytime)
 {
-    SetDuration(GetDuration() - delaytime);
+    int32 duration = GetDuration();
+    // Negative duration is either infinite (-1) or already elapsed.
+    if (duration < 0)
+        return;
+
+    duration -= delaytime;
+    if (duration < 0)
+        duration = 0;
+
+    SetDuration(duration);
 }
 
 void DynamicObject::SetAura(Aura* aura)
