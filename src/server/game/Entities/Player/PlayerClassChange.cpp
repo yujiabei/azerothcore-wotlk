@@ -29,6 +29,8 @@
 #include "Log.h"
 #include "Mail.h"
 #include "ObjectMgr.h"
+#include "AreaDefines.h"
+#include "MapMgr.h"
 #include "Pet.h"
 #include "QuestDef.h"
 #include "Spell.h"
@@ -44,6 +46,12 @@
 
 namespace
 {
+// Quest 12801 "The Light of Dawn" teaches 50977. Its paired cast, 53821, teleports into the
+// Plaguelands and is not granted. Quest 12619 "The Emblazoned Runeblade" casts 53431, whose
+// effect is Learn Spell 53428 (Runeforging). Quest 12842 assumes that spell is already known.
+uint32 constexpr SPELL_DEATH_GATE = 50977;
+uint32 constexpr SPELL_RUNEFORGING = 53428;
+
 struct SpellSnap
 {
     uint32 Id = 0;
@@ -187,6 +195,18 @@ bool IsClassBoundSpell(uint32 spellId, uint8 playerClass)
     }
 
     return false;
+}
+
+void RememberSpell(ClassArchive& archive, uint32 spellId, uint8 specMask)
+{
+    for (SpellSnap const& row : archive.Spells)
+        if (row.Id == spellId)
+            return;
+
+    SpellSnap row;
+    row.Id = spellId;
+    row.SpecMask = specMask ? specMask : uint8(SPEC_MASK_ALL);
+    archive.Spells.push_back(row);
 }
 
 void AppendClassDelete(CharacterDatabaseTransaction trans, CharacterDatabaseStatements id, uint32 guid,
@@ -582,13 +602,19 @@ void RestoreRememberedEquipment(Player* player, uint8 playerClass)
 // Equipped item guids are stored per class and put back when the item is still owned and passes
 // AllowableClass and RequiredLevel. Anything else goes to bags, then mail.
 // The switch row is kept with target_class 0 so last_switch_at can enforce the cooldown.
+// Death knights use the same fresh and legacy level path as every other class. They are not
+// created at the heroic start level and they are not sent to Ebon Hold. Entering grants Death
+// Gate and Runeforging, allocates runes, and selects runic power. Leaving frees the rune object.
+// A character already on map 609 is moved to the faction capital first, without a far teleport
+// and without touching the hearthstone, so the save that wraps this call still persists.
 bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
 {
     uint8 oldClass = getClass();
     if (!newClass || newClass == oldClass)
         return false;
 
-    if (oldClass == CLASS_DEATH_KNIGHT || newClass == CLASS_DEATH_KNIGHT)
+    if ((oldClass == CLASS_DEATH_KNIGHT || newClass == CLASS_DEATH_KNIGHT)
+        && !sConfigMgr->GetOption<bool>("Multiclass.AllowDeathKnight", true))
     {
         LOG_ERROR("entities.player", "Player {} ({}) blocked a Death Knight class change ({} -> {})",
             GetName(), GetGUID().ToString(), uint32(oldClass), uint32(newClass));
@@ -627,6 +653,24 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
         row.Id = itr.first;
         row.SpecMask = itr.second->specMask ? itr.second->specMask : uint8(SPEC_MASK_ALL);
         outgoing.Spells.push_back(row);
+    }
+
+    // 53428 is a trade skill. IsClassBoundSpell keeps it when its skill line is class-bound,
+    // and skips it otherwise. Remember it either way so the snapshot does not drop it.
+    if (oldClass == CLASS_DEATH_KNIGHT)
+    {
+        uint32 const dkSpells[] = { SPELL_DEATH_GATE, SPELL_RUNEFORGING };
+        for (uint32 spellId : dkSpells)
+        {
+            if (!HasSpell(spellId))
+                continue;
+
+            uint8 specMask = SPEC_MASK_ALL;
+            auto itr = m_spells.find(spellId);
+            if (itr != m_spells.end() && itr->second && itr->second->specMask)
+                specMask = itr->second->specMask;
+            RememberSpell(outgoing, spellId, specMask);
+        }
     }
 
     for (auto const& itr : m_talents)
@@ -737,6 +781,58 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
     StoreArchive(guid, oldClass, outgoing, GetLevel(), GetUInt32Value(PLAYER_XP), GetRestBonus(), GetActiveSpec(),
         GetLevelPlayedTime(), equipped);
 
+    // Map 609 is the Scarlet Enclave, including the chapter phases on that map (phase bit 128).
+    // There is no second starting-zone map. SaveToDB skips the write while a far teleport is in
+    // progress, and this runs inside that save, so the capital is written onto the player directly.
+    // Faction-change uses these same coordinates. The hearthstone is left alone.
+    // Switching in while still on 609 would also make CalculateTalentsPoints use level - 55.
+    if (GetMapId() == MAP_EBON_HOLD)
+    {
+        RemoveAurasByType(SPELL_AURA_PHASE);
+
+        bool alliance = GetTeamId(true) == TEAM_ALLIANCE;
+        uint32 mapId = alliance ? uint32(MAP_EASTERN_KINGDOMS) : uint32(MAP_KALIMDOR);
+        float x = alliance ? -8867.68f : 1633.33f;
+        float y = alliance ? 673.373f : -4439.11f;
+        float z = alliance ? 97.9034f : 15.7588f;
+        uint32 zoneId = alliance ? uint32(AREA_STORMWIND_CITY) : uint32(AREA_ORGRIMMAR);
+
+        if (!IsInWorld())
+        {
+            Map* capital = sMapMgr->CreateMap(mapId, this);
+            if (capital)
+            {
+                ResetMap();
+                SetMap(capital);
+            }
+            else
+            {
+                LOG_ERROR("entities.player", "Player {} ({}) could not create map {} while leaving Ebon Hold",
+                    GetName(), GetGUID().ToString(), mapId);
+                SetLocationMapId(mapId);
+            }
+        }
+        else
+            SetLocationMapId(mapId);
+
+        SetLocationInstanceId(0);
+        Relocate(x, y, z, 0.0f);
+        if (!IsInWorld() && FindMap() && FindMap()->GetId() == mapId)
+            UpdatePositionData();
+        else
+        {
+            _zoneId = zoneId;
+            _areaId = zoneId;
+            _updatePositionData = false;
+        }
+
+        if (!IsGameMaster() && GetPhaseMask() != PHASEMASK_NORMAL)
+            SetPhaseMask(PHASEMASK_NORMAL, false);
+
+        LOG_INFO("entities.player", "Player {} ({}) left Ebon Hold for map {} during a class change",
+            GetName(), GetGUID().ToString(), GetMapId());
+    }
+
     RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
     // InitStatsForLevel clears the mount display. Drop the aura too so a low level cannot stay mounted.
     RemoveAurasByType(SPELL_AURA_MOUNTED);
@@ -819,6 +915,23 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
 
     SetByteValue(UNIT_FIELD_BYTES_0, 1, newClass);
 
+    // InitRunes allocates with no free of an existing object, and it returns without freeing
+    // when the class is not a death knight. The destructor deletes m_runes, so this owns it.
+    // Cooldowns are not stored. A returning death knight gets six ready runes.
+    if (newClass == CLASS_DEATH_KNIGHT)
+    {
+        delete m_runes;
+        m_runes = nullptr;
+        InitRunes();
+    }
+    else if (m_runes)
+    {
+        delete m_runes;
+        m_runes = nullptr;
+        for (uint8 i = 0; i < NUM_RUNE_TYPES; ++i)
+            SetFloatValue(PLAYER_RUNE_REGEN_1 + i, 0.0f);
+    }
+
     uint8 restoredSpec = returning ? incomingProgress.Spec : GetActiveSpec();
     if (restoredSpec >= GetSpecsCount())
         restoredSpec = 0;
@@ -848,6 +961,14 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
         SetLevel(targetLevel, false);
 
     InitStatsForLevel(true);
+    if (newClass == CLASS_DEATH_KNIGHT)
+    {
+        if (getPowerType() != POWER_RUNIC_POWER)
+            setPowerType(POWER_RUNIC_POWER);
+        SetMaxPower(POWER_RUNE, 8);
+        SetPower(POWER_RUNE, 8);
+        SetMaxPower(POWER_RUNIC_POWER, 1000);
+    }
     SetUInt32Value(PLAYER_FIELD_BYTES2, playerBytes2);
     if (gamemaster)
         SetPlayerFlag(PLAYER_FLAGS_GM);
@@ -899,6 +1020,26 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
         for (uint32 skillId : skillIds)
             SetSkill(uint16(skillId), GetSkillStep(uint16(skillId)), maxSkill, maxSkill);
         LearnCustomSpells();
+    }
+
+    if (newClass == CLASS_DEATH_KNIGHT)
+    {
+        // Granted on a fresh death knight and again when a snapshot from before this phase
+        // does not contain them. The four Ebon Hold leave checks (TeleportTo, group and solo
+        // battleground join, and the sidecar join check) all require 50977.
+        if (!HasSpell(SPELL_DEATH_GATE))
+            addSpell(SPELL_DEATH_GATE, SPEC_MASK_ALL, true);
+        if (!HasSpell(SPELL_RUNEFORGING))
+            addSpell(SPELL_RUNEFORGING, SPEC_MASK_ALL, true);
+
+        InitTaxiNodesForLevel();
+        for (uint8 field = 0; field < TaxiMaskSize; ++field)
+        {
+            uint32 bits = sDeathKnightTaxiNodesMask[field];
+            for (uint8 bit = 0; bit < 32; ++bit)
+                if (bits & (1u << bit))
+                    m_taxi.SetTaximaskNode(uint32(field) * 32 + bit + 1);
+        }
     }
 
     UpdateSkillsForLevel();
@@ -1000,6 +1141,14 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
             }
         }
     }
+
+    if (newClass == CLASS_DEATH_KNIGHT)
+    {
+        if (returning && incoming.PetId)
+            SetShowDKPet(true);
+    }
+    else if (oldClass == CLASS_DEATH_KNIGHT)
+        SetShowDKPet(false);
 
     if (newClass != CLASS_WARRIOR && CanTitanGrip())
         SetCanTitanGrip(false);

@@ -602,17 +602,12 @@ public:
         Optional<uint8> parsed = ParseClassArgument(className);
         if (!parsed)
         {
-            handler->SendSysMessage(
-                "Unknown class. Use an id or warrior, paladin, hunter, rogue, priest, shaman, mage, warlock, druid.");
+            handler->SendSysMessage("Unknown class. Use an id or warrior, paladin, hunter, rogue, priest, "
+                "deathknight, shaman, mage, warlock, druid.");
             return false;
         }
 
         uint8 newClass = *parsed;
-        if (newClass == CLASS_DEATH_KNIGHT)
-        {
-            handler->SendSysMessage("Death Knights cannot change class yet.");
-            return false;
-        }
 
         if (!player)
             player = PlayerIdentifier::FromTargetOrSelf(handler);
@@ -638,9 +633,10 @@ public:
             return false;
         }
 
-        if (currentClass == CLASS_DEATH_KNIGHT)
+        if ((newClass == CLASS_DEATH_KNIGHT || currentClass == CLASS_DEATH_KNIGHT)
+            && !sConfigMgr->GetOption<bool>("Multiclass.AllowDeathKnight", true))
         {
-            handler->SendSysMessage("Death Knights cannot change class yet.");
+            handler->SendSysMessage("Death Knight class changes are disabled.");
             return false;
         }
 
