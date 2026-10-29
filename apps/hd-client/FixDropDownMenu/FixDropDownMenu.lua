@@ -21,7 +21,6 @@ local BUTTON_HEIGHT = 22
 local MIN_MENU_WIDTH = 140
 local QUEST_BUTTON_MIN_WIDTH = 90
 local QUEST_BUTTON_HEIGHT = 24
-local ShrinkFontTo
 local FitOneLineButtonLabel
 
 UIDROPDOWNMENU_BUTTON_HEIGHT = BUTTON_HEIGHT
@@ -259,7 +258,6 @@ local function UnlockMenuButtonText(fs)
         fs:SetShadowOffset(0, 0)
     end
     fs:SetJustifyH("LEFT")
-    ShrinkFontTo(fs, 12)
     fs:SetWidth(400)
     fs:SetHeight(16)
     return TextWidth(fs)
@@ -579,9 +577,8 @@ local function FixQuestListTitleButton(button)
         fs:SetShadowOffset(0, 0)
     end
     fs:SetJustifyH("LEFT")
-    ShrinkFontTo(fs, 13)
     fs:SetWidth(275)
-    fs:SetHeight(14)
+    fs:SetHeight(16)
 end
 
 local function FixQuestListTitleButtons()
@@ -706,7 +703,6 @@ local function FitQuestPanelFontString(fs)
         ClearQuestTextGradient(fs)
     end
 
-    local name = fs.GetName and fs:GetName()
     local width = fs._FixChineseUIQuestWidth
     if not width then
         width = fs:GetWidth()
@@ -728,9 +724,6 @@ local function FitQuestPanelFontString(fs)
     end
     fs._FixChineseUIQuestBody = true
 
-    if name and string.find(name, "Title") then
-        ShrinkFontTo(fs, 14)
-    end
     FitFontStringHeight(fs, width, true)
     if fs:GetHeight() < 16 then
         fs:SetHeight(16)
@@ -781,11 +774,11 @@ local function FixQuestItemName(name)
         name:SetNonSpaceWrap(true)
     end
     name:SetJustifyH("LEFT")
-    name:SetWidth(124)
-    name:SetHeight(14)
-    local font, size, flags = name:GetFont()
-    if font and size and size > 12 then
-        name:SetFont(font, 12, flags)
+    FitFontStringHeight(name, 124)
+    if name:GetHeight() < 16 then
+        name:SetHeight(16)
+    elseif name:GetHeight() > 36 then
+        name:SetHeight(36)
     end
     if name.SetShadowOffset then
         name:SetShadowOffset(0, 0)
@@ -1101,7 +1094,6 @@ local function FitUnitNamePlate(fs, justify)
         fs:SetNonSpaceWrap(true)
     end
     fs:SetJustifyH(justify or "CENTER")
-    ShrinkFontTo(fs, 12)
     local width = fs:GetWidth()
     if not width or width < 80 then
         width = 100
@@ -1109,7 +1101,7 @@ local function FitUnitNamePlate(fs, justify)
         width = 140
     end
     fs:SetWidth(width)
-    fs:SetHeight(14)
+    fs:SetHeight(16)
 end
 
 local function FixUnitFrameTexts()
@@ -1216,7 +1208,6 @@ local function FixMerchantOverlays()
                 name:SetShadowOffset(0, 0)
             end
             name:SetJustifyH("LEFT")
-            ShrinkFontTo(name, 12)
             name:SetWidth(0)
             local width = TextWidth(name) + 6
             if width < 80 then
@@ -1257,7 +1248,6 @@ local function FixLootButtonNames()
                 name:SetShadowOffset(0, 0)
             end
             name:SetJustifyH("LEFT")
-            ShrinkFontTo(name, 12)
             FitFontStringHeight(name, 110)
             if name:GetHeight() < 16 then
                 name:SetHeight(16)
@@ -1288,20 +1278,9 @@ end
 -- width. After a long label, leftover width + wrap stacks "敏" over "捷"; a short leftover
 -- plus a later long label truncates "法术爆击" to "法...". Hardcoded offsets only match
 -- one leftover width, so they break as soon as the dropdown changes.
-local STAT_LABEL_SIZE = 12
 local STAT_VALUE_MIN = 28
 local STAT_VALUE_MAX = 48
-local STAT_ROW_HEIGHT = 13
-
-function ShrinkFontTo(fs, maxSize)
-    if not fs or not fs.GetFont then
-        return
-    end
-    local font, size, flags = fs:GetFont()
-    if font and size and size > maxSize then
-        fs:SetFont(font, maxSize, flags)
-    end
-end
+local STAT_ROW_HEIGHT = 15
 
 local function FixPaperDollStatRow(statFrame)
     if not statFrame then
@@ -1319,9 +1298,6 @@ local function FixPaperDollStatRow(statFrame)
     if not label then
         return
     end
-
-    ShrinkFontTo(label, STAT_LABEL_SIZE)
-    ShrinkFontTo(text, STAT_LABEL_SIZE)
 
     if label.SetNonSpaceWrap then
         label:SetNonSpaceWrap(true)
@@ -1422,7 +1398,6 @@ function FitOneLineButtonLabel(button)
         fs:SetShadowOffset(0, 0)
     end
     fs:SetJustifyH("CENTER")
-    ShrinkFontTo(fs, 12)
     fs:SetWidth(0)
     local inner = button:GetWidth() - 8
     local textWidth = TextWidth(fs)
@@ -1433,7 +1408,7 @@ function FitOneLineButtonLabel(button)
         inner = 36
     end
     fs:SetWidth(inner)
-    fs:SetHeight(14)
+    fs:SetHeight(16)
 end
 
 local function FixGearManagerButtons()
@@ -1486,16 +1461,15 @@ local function FixAuctionNameFontString(name)
     if name.SetShadowOffset then
         name:SetShadowOffset(0, 0)
     end
-    ShrinkFontTo(name, 12)
     local width = name:GetWidth()
     if not width or width < 40 then
         name:SetWidth(160)
     end
     local text = name:GetText() or ""
     if text:find("\n", 1, true) then
-        name:SetHeight(28)
+        name:SetHeight(32)
     else
-        name:SetHeight(14)
+        name:SetHeight(16)
     end
 end
 
@@ -1616,9 +1590,8 @@ local function FixTradeSkillListButton(button)
         fs:SetShadowOffset(0, 0)
     end
     fs:SetJustifyH("LEFT")
-    ShrinkFontTo(fs, 12)
     fs:SetWidth(270)
-    fs:SetHeight(14)
+    fs:SetHeight(16)
 end
 
 local function FitSkillTitle(fs)
@@ -1632,7 +1605,6 @@ local function FitSkillTitle(fs)
         fs:SetShadowOffset(0, 0)
     end
     fs:SetJustifyH("LEFT")
-    ShrinkFontTo(fs, 13)
     fs:SetWidth(244)
     fs:SetHeight(16)
 end
@@ -1675,14 +1647,13 @@ local function FixTradeSkillNames()
             makeable:SetShadowOffset(0, 0)
         end
         makeable:SetJustifyH("LEFT")
-        ShrinkFontTo(makeable, 12)
         makeable:SetWidth(0)
         local width = TextWidth(makeable) + 4
         if width < 56 then
             width = 56
         end
         makeable:SetWidth(width)
-        makeable:SetHeight(14)
+        makeable:SetHeight(16)
     end
 end
 
@@ -1796,7 +1767,6 @@ local function FixItemTextFrame()
         title:SetShadowOffset(0, 0)
     end
     title:SetJustifyH("CENTER")
-    ShrinkFontTo(title, 13)
     FitFontStringHeight(title, 240)
     if title:GetHeight() < 16 then
         title:SetHeight(16)
@@ -1840,7 +1810,6 @@ local function FixBarberShopFrame()
                 cat:SetShadowOffset(0, 0)
             end
             cat:SetJustifyH("CENTER")
-            ShrinkFontTo(cat, 13)
             FitFontStringHeight(cat, 100)
             if cat:GetHeight() < 16 then
                 cat:SetHeight(16)
