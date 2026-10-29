@@ -19,10 +19,12 @@
 #include "Chat.h"
 #include "CommandScript.h"
 #include "DBCStores.h"
+#include "DatabaseEnv.h"
 #include "Player.h"
 #include "PlayerScript.h"
 #include "RBAC.h"
 #include "StringConvert.h"
+#include "World.h"
 #include "WorldSession.h"
 #ifdef MOD_PLAYERBOTS
 #include "PlayerbotsDatabase.h"
@@ -113,6 +115,7 @@ public:
 
         static ChatCommandTable multiclassCommandTable =
         {
+            { "mastery", HandleMulticlassMasteryCommand, rbac::RBAC_PERM_COMMAND_MULTICLASS_MASTERY, Console::Yes },
             { "retain", retainCommandTable }
         };
 
@@ -209,6 +212,56 @@ public:
             sourceClass = *parsed;
         }
         return player->ClearRetainedSpells(sourceClass, handler);
+    }
+
+    static bool HandleMulticlassMasteryCommand(ChatHandler* handler, Optional<PlayerIdentifier> player)
+    {
+        if (!player)
+            player = PlayerIdentifier::FromTargetOrSelf(handler);
+        if (!player)
+            return false;
+
+        if (WorldSession* session = handler->GetSession())
+            if (Player* self = session->GetPlayer())
+                if (self->GetGUID() != player->GetGUID() && session->GetSecurity() == SEC_PLAYER)
+                {
+                    handler->SendSysMessage("You can only list your own mastered classes.");
+                    return false;
+                }
+
+        if (Player* online = player->GetConnectedPlayer())
+            if (handler->HasLowerSecurity(online, ObjectGuid::Empty))
+                return false;
+
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_MASTERY_LIST);
+        stmt->SetData(0, player->GetGUID().GetCounter());
+        PreparedQueryResult result = CharacterDatabase.Query(stmt);
+        if (!result)
+        {
+            handler->SendSysMessage("No class has been mastered.");
+            return true;
+        }
+
+        LocaleConstant locale = handler->GetSession()
+            ? handler->GetSession()->GetSessionDbcLocale()
+            : sWorld->GetDefaultDbcLocale();
+
+        handler->SendSysMessage("Mastered classes:");
+        do
+        {
+            Field* fields = result->Fetch();
+            uint8 classId = fields[0].Get<uint8>();
+            uint8 level = fields[1].Get<uint8>();
+            char const* name = nullptr;
+            if (ChrClassesEntry const* entry = sChrClassesStore.LookupEntry(classId))
+                name = entry->name[locale];
+            if (!name || !name[0])
+                name = "Unknown";
+
+            handler->PSendSysMessage("{} (level {})", name, uint32(level));
+        } while (result->NextRow());
+
+        return true;
     }
 };
 

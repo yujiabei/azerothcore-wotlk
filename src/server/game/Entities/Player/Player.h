@@ -43,6 +43,7 @@
 #include "WorldSession.h"
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -599,6 +600,29 @@ enum AtLoginFlags
     AT_LOGIN_CHECK_ACHIEVS     = 0x400,
     AT_LOGIN_RESURRECT         = 0x800,
     AT_LOGIN_CHANGE_CLASS      = 0x1000
+};
+
+enum ClassChangeRequestResult : uint8
+{
+    CLASS_CHANGE_OK = 0,
+    CLASS_CHANGE_DISABLED,
+    CLASS_CHANGE_UNKNOWN,
+    CLASS_CHANGE_SAME,
+    CLASS_CHANGE_RACE,
+    CLASS_CHANGE_DEATH_KNIGHT,
+    CLASS_CHANGE_BOT,
+    CLASS_CHANGE_PENDING,
+    CLASS_CHANGE_COOLDOWN,
+    CLASS_CHANGE_COMBAT,
+    CLASS_CHANGE_BATTLEGROUND,
+    CLASS_CHANGE_CITY,
+    CLASS_CHANGE_MONEY
+};
+
+struct ClassChangeRequestStatus
+{
+    ClassChangeRequestResult Result = CLASS_CHANGE_UNKNOWN;
+    uint32 Extra = 0;
 };
 
 typedef std::map<uint32, QuestStatusData> QuestStatusMap;
@@ -1734,6 +1758,10 @@ public:
     // the caller commits that transaction together with SaveToDB.
     void ApplyPendingClassChange(CharacterDatabaseTransaction trans);
     bool ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans);
+    // Queues the same logout switch as .character changeclass. Does not log the player out.
+    ClassChangeRequestStatus RequestClassChange(uint8 newClass);
+    [[nodiscard]] uint8 GetFreshClassLevel() const;
+    [[nodiscard]] bool IsInCapitalCity() const;
     // Temporary cross-class spells. They are never written to character_spell.
     void ApplyRetainedSpells(ChatHandler* handler = nullptr, bool announce = true);
     void SetRetainActivesSuppressed(bool suppressed);
@@ -1747,6 +1775,8 @@ public:
     void CachePlayerbotFlag();
     [[nodiscard]] bool GainsMulticlassXpBonus() const;
     uint32 ClaimClassDailyBonus();
+    // Removes the previous class mastery aura, then applies the weapon-skill floor and the new aura.
+    void ApplyMulticlassClassEnter(uint8 oldClass);
     [[nodiscard]] bool MeetsRidingLevelRequirement(SpellInfo const* spell) const;
     void LearnCustomSpells();
     void LearnDefaultSkills();
@@ -3023,6 +3053,21 @@ private:
     uint32 m_classDailyBonusAt;
     // Session bot flag plus the playerbots table, read once at login.
     bool m_isPlayerbot;
+    // Unix time when the class being played reached the server level cap. 0 if it has not.
+    uint32 m_classMasteredAt;
+    // Highest weapon-skill value stored for every class except the one being played.
+    std::unordered_map<uint32, uint16> m_otherClassWeaponSkill;
+
+    void LoadOtherClassWeaponSkills();
+    void ApplyWeaponSkillFloor();
+    void LoadClassMastery();
+    void GrantClassMastery();
+    void MarkClassMastered(uint8 classId, uint8 level);
+    void RetroactiveClassMastery();
+    [[nodiscard]] uint32 StoredClassMastery(uint8 classId) const;
+    void ApplyMasteryAura();
+    void RemoveMasteryAura(uint8 classId);
+    [[nodiscard]] uint32 MulticlassClassOption(char const* prefix, uint8 classId) const;
 
     // internal common parts for CanStore/StoreItem functions
     InventoryResult CanStoreItem_InSpecificSlot(uint8 bag, uint8 slot, ItemPosCountVec& dest, ItemTemplate const* pProto, uint32& count, bool swap, Item* pSrcItem) const;

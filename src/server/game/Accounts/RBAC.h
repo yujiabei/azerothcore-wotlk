@@ -712,6 +712,8 @@ enum RBACPermissions
     RBAC_PERM_COMMAND_MULTICLASS_RETAIN_ADD              = 1002,
     RBAC_PERM_COMMAND_MULTICLASS_RETAIN_REMOVE           = 1003,
     RBAC_PERM_COMMAND_MULTICLASS_RETAIN_CLEAR            = 1004,
+    // 1001-1004 are the retained-spell commands, already on Playerbot.
+    RBAC_PERM_COMMAND_MULTICLASS_MASTERY                 = 1005,
     RBAC_PERM_MAX
 };
 

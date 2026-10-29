@@ -24,7 +24,9 @@
 #include "GameTime.h"
 #include "Guild.h"
 #include "GuildMgr.h"
+#include "Bag.h"
 #include "Item.h"
+#include "ReputationMgr.h"
 #include "Language.h"
 #include "Log.h"
 #include "Mail.h"
@@ -37,6 +39,9 @@
 #include "SpellAuras.h"
 #include "SpellMgr.h"
 #include "World.h"
+#ifdef MOD_PLAYERBOTS
+#include "PlayerbotsDatabase.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -499,42 +504,118 @@ uint8 LegacyStartLevel(Player const* player)
     return uint8(scaled);
 }
 
+void MailCarriedItem(Player* player, Item* item, std::string const& body)
+{
+    player->MoveItemFromInventory(item->GetBagSlot(), item->GetSlot(), true);
+    CharacterDatabaseTransaction mailTrans = CharacterDatabase.BeginTransaction();
+    item->DeleteFromInventoryDB(mailTrans);
+    item->SaveToDB(mailTrans);
+    std::string subject = "Item could not be equipped";
+    if (player->GetSession())
+        subject = player->GetSession()->GetAcoreString(LANG_NOT_EQUIPPED_ITEM);
+    MailDraft(subject, body)
+        .AddItem(item)
+        .SendMailTo(mailTrans, player, MailSender(player, MAIL_STATIONERY_GM), MAIL_CHECK_MASK_COPIED);
+    CharacterDatabase.CommitTransaction(mailTrans);
+}
+
+bool PlaceItemOutsideBag(Player* player, Item* item, uint8 sourceBag)
+{
+    auto storeIn = [&](uint8 bag) -> bool
+    {
+        if (bag == sourceBag)
+            return false;
+
+        ItemPosCountVec dest;
+        if (player->CanStoreItem(bag, NULL_SLOT, dest, item, false) != EQUIP_ERR_OK)
+            return false;
+
+        player->RemoveItem(item->GetBagSlot(), item->GetSlot(), true);
+        player->StoreItem(dest, item, true);
+        return true;
+    };
+
+    if (storeIn(INVENTORY_SLOT_BAG_0))
+        return true;
+
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+        if (storeIn(bag))
+            return true;
+
+    bool sourceIsBankBag = sourceBag >= BANK_SLOT_BAG_START && sourceBag < BANK_SLOT_BAG_END;
+    if (!sourceIsBankBag)
+    {
+        ItemPosCountVec bankDest;
+        if (player->CanBankItem(NULL_BAG, NULL_SLOT, bankDest, item, false) == EQUIP_ERR_OK)
+        {
+            player->RemoveItem(item->GetBagSlot(), item->GetSlot(), true);
+            player->BankItem(bankDest, item, true);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void EmptyRestrictedBag(Player* player, Item* bagItem)
+{
+    Bag* bag = bagItem->ToBag();
+    if (!bag)
+        return;
+
+    uint8 sourceBag = bagItem->GetSlot();
+    for (uint8 slot = 0; slot < bag->GetBagSize(); ++slot)
+    {
+        Item* inner = bag->GetItemByPos(slot);
+        if (!inner)
+            continue;
+
+        if (PlaceItemOutsideBag(player, inner, sourceBag))
+            continue;
+
+        MailCarriedItem(player, inner, "This bag cannot be equipped by your current class.");
+    }
+}
+
+void UnequipInvalidSlot(Player* player, uint8 slot)
+{
+    Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+    if (!item)
+        return;
+
+    ItemTemplate const* proto = item->GetTemplate();
+    if (!ItemFailsClassOrLevel(player, proto))
+        return;
+
+    if (item->IsNotEmptyBag())
+        EmptyRestrictedBag(player, item);
+
+    if (item->IsNotEmptyBag())
+    {
+        LOG_ERROR("entities.player", "Player {} ({}) kept non-empty bag {} in slot {} after class change",
+            player->GetName(), player->GetGUID().ToString(), item->GetEntry(), uint32(slot));
+        return;
+    }
+
+    ItemPosCountVec dest;
+    if (player->CanStoreItem(NULL_BAG, NULL_SLOT, dest, item, false) == EQUIP_ERR_OK)
+    {
+        player->RemoveItem(INVENTORY_SLOT_BAG_0, slot, true);
+        player->StoreItem(dest, item, true);
+        return;
+    }
+
+    MailCarriedItem(player, item, "This item cannot be equipped by your current class and level.");
+}
+
 void UnequipInvalidGear(Player* player)
 {
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
-    {
-        Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-        if (!item)
-            continue;
-
-        ItemTemplate const* proto = item->GetTemplate();
-        if (!ItemFailsClassOrLevel(player, proto))
-            continue;
-        if (item->IsNotEmptyBag())
-        {
-            LOG_ERROR("entities.player", "Player {} ({}) kept non-empty bag {} in slot {} after class change",
-                player->GetName(), player->GetGUID().ToString(), item->GetEntry(), uint32(slot));
-            continue;
-        }
-
-        ItemPosCountVec dest;
-        if (player->CanStoreItem(NULL_BAG, NULL_SLOT, dest, item, false) == EQUIP_ERR_OK)
-        {
-            player->RemoveItem(INVENTORY_SLOT_BAG_0, slot, true);
-            player->StoreItem(dest, item, true);
-            continue;
-        }
-
-        player->MoveItemFromInventory(INVENTORY_SLOT_BAG_0, slot, true);
-        CharacterDatabaseTransaction mailTrans = CharacterDatabase.BeginTransaction();
-        item->DeleteFromInventoryDB(mailTrans);
-        item->SaveToDB(mailTrans);
-        std::string subject = player->GetSession()->GetAcoreString(LANG_NOT_EQUIPPED_ITEM);
-        MailDraft(subject, "This item cannot be equipped by your current class and level.")
-            .AddItem(item)
-            .SendMailTo(mailTrans, player, MailSender(player, MAIL_STATIONERY_GM), MAIL_CHECK_MASK_COPIED);
-        CharacterDatabase.CommitTransaction(mailTrans);
-    }
+        UnequipInvalidSlot(player, slot);
+    for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
+        UnequipInvalidSlot(player, slot);
+    for (uint8 slot = BANK_SLOT_BAG_START; slot < BANK_SLOT_BAG_END; ++slot)
+        UnequipInvalidSlot(player, slot);
 }
 
 void RestoreRememberedEquipment(Player* player, uint8 playerClass)
@@ -588,6 +669,165 @@ void RestoreRememberedEquipment(Player* player, uint8 playerClass)
     } while (result->NextRow());
 
     player->AutoUnequipOffhandIfNeed();
+}
+
+struct PetPark
+{
+    uint32 PetId = 0;
+    uint8 Class = 0;
+    uint8 StableSlot = 0;
+};
+
+void ParkPet(PetStable* stable, PetStable::PetInfo pet, uint8 fallbackClass, uint8 stableSlot,
+    std::vector<PetPark>& parked)
+{
+    if (!pet.PetNumber)
+        return;
+
+    if (!pet.Class)
+        pet.Class = fallbackClass;
+
+    PetPark row;
+    row.PetId = pet.PetNumber;
+    row.Class = pet.Class;
+    row.StableSlot = stableSlot;
+    parked.push_back(row);
+    stable->ForeignPets.push_back(std::move(pet));
+}
+
+void ParkVisiblePets(PetStable* stable, uint8 oldClass, std::vector<PetPark>& parked)
+{
+    if (!stable)
+        return;
+
+    if (stable->CurrentPet)
+    {
+        PetStable::PetInfo pet = std::move(*stable->CurrentPet);
+        stable->CurrentPet.reset();
+        ParkPet(stable, std::move(pet), oldClass, 0, parked);
+    }
+
+    for (uint8 i = 0; i < stable->StabledPets.size(); ++i)
+    {
+        if (!stable->StabledPets[i])
+            continue;
+
+        PetStable::PetInfo pet = std::move(*stable->StabledPets[i]);
+        stable->StabledPets[i].reset();
+        ParkPet(stable, std::move(pet), oldClass, uint8(PET_SAVE_FIRST_STABLE_SLOT + i), parked);
+    }
+
+    std::vector<PetStable::PetInfo> unslotted = std::move(stable->UnslottedPets);
+    stable->UnslottedPets.clear();
+    for (PetStable::PetInfo& pet : unslotted)
+        ParkPet(stable, std::move(pet), oldClass, 0, parked);
+}
+
+Optional<PetStable::PetInfo> ExtractPet(PetStable* stable, uint32 petId)
+{
+    if (!stable || !petId)
+        return std::nullopt;
+
+    if (stable->CurrentPet && stable->CurrentPet->PetNumber == petId)
+    {
+        PetStable::PetInfo pet = std::move(*stable->CurrentPet);
+        stable->CurrentPet.reset();
+        return pet;
+    }
+
+    for (auto itr = stable->UnslottedPets.begin(); itr != stable->UnslottedPets.end(); ++itr)
+    {
+        if (itr->PetNumber != petId)
+            continue;
+
+        PetStable::PetInfo pet = std::move(*itr);
+        stable->UnslottedPets.erase(itr);
+        return pet;
+    }
+
+    for (auto itr = stable->ForeignPets.begin(); itr != stable->ForeignPets.end(); ++itr)
+    {
+        if (itr->PetNumber != petId)
+            continue;
+
+        PetStable::PetInfo pet = std::move(*itr);
+        stable->ForeignPets.erase(itr);
+        return pet;
+    }
+
+    for (Optional<PetStable::PetInfo>& slot : stable->StabledPets)
+    {
+        if (!slot || slot->PetNumber != petId)
+            continue;
+
+        PetStable::PetInfo pet = std::move(*slot);
+        slot.reset();
+        return pet;
+    }
+
+    return std::nullopt;
+}
+
+void RestoreClassPets(Player* player, uint8 newClass, uint32 petId, std::vector<PetPark>& restored)
+{
+    PetStable* stable = player->GetPetStable();
+    if (!stable)
+        return;
+
+    if (petId)
+    {
+        if (Optional<PetStable::PetInfo> pet = ExtractPet(stable, petId))
+        {
+            pet->Class = newClass;
+            stable->CurrentPet = std::move(*pet);
+        }
+    }
+
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_PET);
+    stmt->SetData(0, player->GetGUID().GetCounter());
+    stmt->SetData(1, newClass);
+    if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            uint32 id = fields[0].Get<uint32>();
+            uint8 slot = fields[1].Get<uint8>();
+            if (!slot || slot > MAX_PET_STABLES)
+                continue;
+
+            Optional<PetStable::PetInfo> pet = ExtractPet(stable, id);
+            if (!pet)
+                continue;
+
+            pet->Class = newClass;
+            if (stable->StabledPets[slot - 1])
+            {
+                stable->ForeignPets.push_back(std::move(*pet));
+                continue;
+            }
+
+            stable->StabledPets[slot - 1] = std::move(*pet);
+            PetPark row;
+            row.PetId = id;
+            row.Class = newClass;
+            row.StableSlot = slot;
+            restored.push_back(row);
+        } while (result->NextRow());
+    }
+}
+
+bool IsRandomBotGuid(ObjectGuid::LowType guid)
+{
+#ifdef MOD_PLAYERBOTS
+    PlayerbotsDatabasePreparedStatement* stmt =
+        PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_RANDOM_BOT_BY_BOT);
+    stmt->SetData(0, guid);
+    return bool(PlayerbotsDatabase.Query(stmt));
+#else
+    (void)guid;
+    return false;
+#endif
 }
 }
 
@@ -901,17 +1141,11 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
         RemoveActiveQuest(row.Id, false);
     }
 
-    uint32 parkedPetId = 0;
-    if (PetStable* stable = GetPetStable())
-    {
-        if (stable->CurrentPet)
-        {
-            parkedPetId = stable->CurrentPet->PetNumber;
-            stable->CurrentPet->Class = oldClass;
-            stable->UnslottedPets.push_back(std::move(*stable->CurrentPet));
-            stable->CurrentPet.reset();
-        }
-    }
+    // Stabled and current pets leave the visible stable before the live pet is saved.
+    // A hunter save deletes every not-in-slot pet of this class, so stable rows stay in
+    // slots 1-4 until the caller's transaction moves them.
+    std::vector<PetPark> parkedPets;
+    ParkVisiblePets(GetPetStable(), oldClass, parkedPets);
 
     // GiveLevel and InitStatsForLevel sync a live pet to the owner level. Dismiss first so a
     // hunter pet is saved at the old class level instead of the level being restored.
@@ -919,6 +1153,7 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
         RemovePet(nullptr, PET_SAVE_NOT_IN_SLOT);
 
     SetByteValue(UNIT_FIELD_BYTES_0, 1, newClass);
+    GetReputationMgr().ApplyClassBaseChange(oldClass, newClass);
 
     // InitRunes allocates with no free of an existing object, and it returns without freeing
     // when the class is not a death knight. The destructor deletes m_runes, so this owns it.
@@ -1051,6 +1286,8 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
     }
 
     UpdateSkillsForLevel();
+    // Mastery aura and the weapon-skill floor. One call so the switch body stays small.
+    ApplyMulticlassClassEnter(oldClass);
 
     for (TalentSnap const& row : incoming.Talents)
         if (row.SpecMask)
@@ -1132,23 +1369,9 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
             SetQuestSlotCounter(slot, QUEST_PVP_KILL_SLOT, row.Data.PlayerCount);
     }
 
-    if (returning && incoming.PetId)
-    {
-        if (PetStable* stable = GetPetStable())
-        {
-            if (!stable->CurrentPet || stable->CurrentPet->PetNumber != incoming.PetId)
-            {
-                for (auto itr = stable->UnslottedPets.begin(); itr != stable->UnslottedPets.end(); ++itr)
-                {
-                    if (itr->PetNumber != incoming.PetId)
-                        continue;
-                    stable->CurrentPet = std::move(*itr);
-                    stable->UnslottedPets.erase(itr);
-                    break;
-                }
-            }
-        }
-    }
+    std::vector<PetPark> restoredPets;
+    if (returning)
+        RestoreClassPets(this, newClass, incoming.PetId, restoredPets);
 
     if (newClass == CLASS_DEATH_KNIGHT)
     {
@@ -1182,6 +1405,9 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
     if (cost)
         ModifyMoney(-int32(cost));
 
+    if (sConfigMgr->GetOption<bool>("Multiclass.ResetArenaOnSwitch", false))
+        SetAtLoginFlag(AT_LOGIN_RESET_ARENA);
+
     RemoveAtLoginFlag(AT_LOGIN_CHANGE_CLASS, false);
 
     sCharacterCache->UpdateCharacterClass(GetGUID(), newClass);
@@ -1193,8 +1419,29 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
     ConsumeArchive(trans, guid, newClass);
     AppendProgress(trans, guid, newClass, GetLevel(), GetUInt32Value(PLAYER_XP), GetRestBonus(), GetActiveSpec(),
         GetLevelPlayedTime(), returning ? incoming.PetId : 0, m_classDailyBonusAt);
-    AppendPetSlot(trans, guid, parkedPetId, uint8(PET_SAVE_NOT_IN_SLOT), oldClass);
-    AppendPetSlot(trans, guid, returning ? incoming.PetId : 0, uint8(PET_SAVE_AS_CURRENT), newClass);
+    for (PetPark const& parked : parkedPets)
+    {
+        AppendPetSlot(trans, guid, parked.PetId, uint8(PET_SAVE_NOT_IN_SLOT), parked.Class);
+        if (!parked.StableSlot)
+            continue;
+
+        CharacterDatabasePreparedStatement* petStmt = CharacterDatabase.GetPreparedStatement(CHAR_REP_CLASS_PET);
+        petStmt->SetData(0, guid);
+        petStmt->SetData(1, parked.Class);
+        petStmt->SetData(2, parked.PetId);
+        petStmt->SetData(3, parked.StableSlot);
+        trans->Append(petStmt);
+    }
+
+    if (returning && incoming.PetId)
+        AppendPetSlot(trans, guid, incoming.PetId, uint8(PET_SAVE_AS_CURRENT), newClass);
+    for (PetPark const& restored : restoredPets)
+        AppendPetSlot(trans, guid, restored.PetId, restored.StableSlot, newClass);
+
+    CharacterDatabasePreparedStatement* clearPets = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CLASS_PET_BY_CLASS);
+    clearPets->SetData(0, guid);
+    clearPets->SetData(1, newClass);
+    trans->Append(clearPets);
 
     CharacterDatabasePreparedStatement* done = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CLASS_SWITCH_COMPLETE);
     done->SetData(0, uint32(GameTime::GetGameTime().count()));
@@ -1205,6 +1452,135 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
         GetName(), GetGUID().ToString(), uint32(oldClass), uint32(newClass));
     ApplyRetainedSpells();
     return true;
+}
+
+uint8 Player::GetFreshClassLevel() const
+{
+    return LegacyStartLevel(this);
+}
+
+bool Player::IsInCapitalCity() const
+{
+    AreaTableEntry const* zone = sAreaTableStore.LookupEntry(GetZoneId());
+    return zone && (zone->flags & AREA_FLAG_CAPITAL) != 0;
+}
+
+ClassChangeRequestStatus Player::RequestClassChange(uint8 newClass)
+{
+    ClassChangeRequestStatus status;
+    if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", true))
+    {
+        status.Result = CLASS_CHANGE_DISABLED;
+        return status;
+    }
+
+    if (!newClass || !sChrClassesStore.LookupEntry(newClass))
+    {
+        status.Result = CLASS_CHANGE_UNKNOWN;
+        return status;
+    }
+
+    if ((newClass == CLASS_DEATH_KNIGHT || getClass() == CLASS_DEATH_KNIGHT)
+        && !sConfigMgr->GetOption<bool>("Multiclass.AllowDeathKnight", true))
+    {
+        status.Result = CLASS_CHANGE_DEATH_KNIGHT;
+        return status;
+    }
+
+    if (getClass() == newClass)
+    {
+        status.Result = CLASS_CHANGE_SAME;
+        return status;
+    }
+
+    if (!sObjectMgr->GetPlayerInfo(getRace(true), newClass))
+    {
+        status.Result = CLASS_CHANGE_RACE;
+        return status;
+    }
+
+    if (IsRandomBotGuid(GetGUID().GetCounter()) || (GetSession() && GetSession()->IsBot()))
+    {
+        status.Result = CLASS_CHANGE_BOT;
+        return status;
+    }
+
+    uint32 now = uint32(GameTime::GetGameTime().count());
+    uint32 cooldown = sConfigMgr->GetOption<uint32>("Multiclass.SwitchCooldown", 0);
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_SWITCH);
+    stmt->SetData(0, GetGUID().GetCounter());
+    if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
+    {
+        Field* fields = result->Fetch();
+        uint8 pending = fields[0].Get<uint8>();
+        uint32 lastSwitch = fields[2].Get<uint32>();
+        if (pending)
+        {
+            status.Result = CLASS_CHANGE_PENDING;
+            return status;
+        }
+
+        if (cooldown && lastSwitch && uint64(lastSwitch) + cooldown > now)
+        {
+            status.Result = CLASS_CHANGE_COOLDOWN;
+            status.Extra = uint32(uint64(lastSwitch) + cooldown - now);
+            return status;
+        }
+    }
+
+    if (IsInCombat())
+    {
+        status.Result = CLASS_CHANGE_COMBAT;
+        return status;
+    }
+
+    if (InBattleground() || InArena())
+    {
+        status.Result = CLASS_CHANGE_BATTLEGROUND;
+        return status;
+    }
+
+    if (sConfigMgr->GetOption<bool>("Multiclass.RequireCity", true) && !IsInCapitalCity())
+    {
+        status.Result = CLASS_CHANGE_CITY;
+        return status;
+    }
+
+    uint32 cost = sConfigMgr->GetOption<uint32>("Multiclass.SwitchCost", 0);
+    if (cost && !HasEnoughMoney(cost))
+    {
+        status.Result = CLASS_CHANGE_MONEY;
+        return status;
+    }
+
+    stmt = CharacterDatabase.GetPreparedStatement(CHAR_REP_CLASS_SWITCH_REQUEST);
+    stmt->SetData(0, GetGUID().GetCounter());
+    stmt->SetData(1, newClass);
+    stmt->SetData(2, now);
+    CharacterDatabase.DirectExecute(stmt);
+
+    SetAtLoginFlag(AT_LOGIN_CHANGE_CLASS);
+    CharacterDatabasePreparedStatement* flagStmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_ADD_AT_LOGIN_FLAG);
+    flagStmt->SetData(0, uint16(AT_LOGIN_CHANGE_CLASS));
+    flagStmt->SetData(1, GetGUID().GetCounter());
+    CharacterDatabase.Execute(flagStmt);
+
+    status.Result = CLASS_CHANGE_OK;
+    return status;
+}
+
+void MailCityChangeRefusal(Player* player)
+{
+    LocaleConstant locale = LOCALE_enUS;
+    if (player->GetSession())
+        locale = player->GetSession()->GetSessionDbcLocale();
+
+    std::string subject = sObjectMgr->GetAcoreString(LANG_MULTICLASS_CITY_MAIL_SUBJECT, locale);
+    std::string body = sObjectMgr->GetAcoreString(LANG_MULTICLASS_CITY_MAIL_BODY, locale);
+    MailDraft draft(subject, body);
+    CharacterDatabaseTransaction mailTrans = CharacterDatabase.BeginTransaction();
+    draft.SendMailTo(mailTrans, player, MailSender(player, MAIL_STATIONERY_GM), MAIL_CHECK_MASK_COPIED);
+    CharacterDatabase.CommitTransaction(mailTrans);
 }
 
 void Player::ApplyPendingClassChange(CharacterDatabaseTransaction trans)
@@ -1224,6 +1600,23 @@ void Player::ApplyPendingClassChange(CharacterDatabaseTransaction trans)
     {
         clearPending();
         LOG_INFO("entities.player", "Player {} ({}) skipped a class change because multiclass is disabled",
+            GetName(), GetGUID().ToString());
+        return;
+    }
+
+    // The command already checked the city before logout. This covers an offline queue
+    // and a crash before that logout. Cancelling here does not charge the switch cost.
+    if (isBeingLoaded() && sConfigMgr->GetOption<bool>("Multiclass.RequireCity", true) && !IsInCapitalCity())
+    {
+        clearPending();
+        MailCityChangeRefusal(this);
+        if (GetSession())
+        {
+            std::string text = sObjectMgr->GetAcoreString(LANG_MULTICLASS_CITY_MAIL_BODY,
+                GetSession()->GetSessionDbcLocale());
+            ChatHandler(GetSession()).SendSysMessage(text.c_str());
+        }
+        LOG_INFO("entities.player", "Player {} ({}) cancelled a class change outside a capital city",
             GetName(), GetGUID().ToString());
         return;
     }

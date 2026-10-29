@@ -376,6 +376,7 @@ Player::Player(WorldSession* session): Unit(), m_mover(this), _cinematicMgr(*thi
     m_highestClassLevel = 0;
     m_classDailyBonusAt = 0;
     m_isPlayerbot = false;
+    m_classMasteredAt = 0;
 
     m_ControlledByPlayer = true;
 
@@ -1751,6 +1752,7 @@ void Player::AddToWorld()
     ///- It will crash when updating the ObjectAccessor
     ///- The player should only be added when logging in
     Unit::AddToWorld();
+    ApplyMasteryAura();
 
     for (uint8 i = PLAYER_SLOT_START; i < PLAYER_SLOT_END; ++i)
         if (m_items[i])
@@ -2595,6 +2597,322 @@ uint32 Player::ClaimClassDailyBonus()
     return bonus;
 }
 
+uint32 Player::MulticlassClassOption(char const* prefix, uint8 classId) const
+{
+    char const* suffix = nullptr;
+    switch (classId)
+    {
+        case CLASS_WARRIOR:
+            suffix = "Warrior";
+            break;
+        case CLASS_PALADIN:
+            suffix = "Paladin";
+            break;
+        case CLASS_HUNTER:
+            suffix = "Hunter";
+            break;
+        case CLASS_ROGUE:
+            suffix = "Rogue";
+            break;
+        case CLASS_PRIEST:
+            suffix = "Priest";
+            break;
+        case CLASS_DEATH_KNIGHT:
+            suffix = "DeathKnight";
+            break;
+        case CLASS_SHAMAN:
+            suffix = "Shaman";
+            break;
+        case CLASS_MAGE:
+            suffix = "Mage";
+            break;
+        case CLASS_WARLOCK:
+            suffix = "Warlock";
+            break;
+        case CLASS_DRUID:
+            suffix = "Druid";
+            break;
+        default:
+            return 0;
+    }
+
+    return sConfigMgr->GetOption<uint32>(Acore::StringFormat("{}{}", prefix, suffix), 0);
+}
+
+static bool IsMasteryCosmeticSpell(SpellInfo const* info)
+{
+    if (!info || info->GetMaxDuration() >= 0)
+        return false;
+
+    bool visual = false;
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        SpellEffectInfo const& effect = info->Effects[i];
+        if (!effect.IsEffect())
+            continue;
+        if (!effect.IsAura())
+            return false;
+
+        switch (effect.ApplyAuraName)
+        {
+            case SPELL_AURA_TRANSFORM:
+            case SPELL_AURA_MOD_SCALE:
+            case SPELL_AURA_MOD_SCALE_2:
+            case SPELL_AURA_CLONE_CASTER:
+                visual = true;
+                break;
+            default:
+                return false;
+        }
+    }
+
+    return visual;
+}
+
+void Player::RemoveMasteryAura(uint8 classId)
+{
+    uint32 spellId = MulticlassClassOption("Multiclass.MasteryAura.", classId);
+    if (spellId)
+        RemoveAurasDueToSpell(spellId);
+}
+
+void Player::ApplyMasteryAura()
+{
+    if (m_isPlayerbot || !m_classMasteredAt || !IsInWorld())
+        return;
+
+    uint32 spellId = MulticlassClassOption("Multiclass.MasteryAura.", getClass());
+    if (!spellId || HasAura(spellId))
+        return;
+
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+    if (!IsMasteryCosmeticSpell(info))
+    {
+        LOG_ERROR("entities.player",
+            "Player {} ({}) ignored mastery aura {}: it must be a permanent transform, scale, or clone aura",
+            GetName(), GetGUID().ToString(), spellId);
+        return;
+    }
+
+    CastSpell(this, spellId, true);
+}
+
+void Player::LoadClassMastery()
+{
+    m_classMasteredAt = 0;
+    if (m_isPlayerbot)
+        return;
+
+    m_classMasteredAt = StoredClassMastery(getClass());
+}
+
+uint32 Player::StoredClassMastery(uint8 classId) const
+{
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_MASTERY);
+    stmt->SetData(0, GetGUID().GetCounter());
+    stmt->SetData(1, classId);
+    PreparedQueryResult result = CharacterDatabase.Query(stmt);
+    if (!result)
+        return 0;
+
+    Field const& field = result->Fetch()[0];
+    if (field.IsNull())
+        return 0;
+
+    return field.Get<uint32>();
+}
+
+void Player::MarkClassMastered(uint8 classId, uint8 level)
+{
+    if (m_isPlayerbot || !classId || !level)
+        return;
+
+    uint32 now = uint32(GameTime::GetGameTime().count());
+    if (!now)
+        now = 1;
+    if (classId == getClass())
+        m_classMasteredAt = now;
+
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CLASS_MASTERY);
+    stmt->SetData(0, GetGUID().GetCounter());
+    stmt->SetData(1, classId);
+    stmt->SetData(2, level);
+    stmt->SetData(3, now);
+    CharacterDatabase.DirectExecute(stmt);
+
+    if (uint32 titleId = MulticlassClassOption("Multiclass.MasteryTitle.", classId))
+    {
+        if (CharTitlesEntry const* title = sCharTitlesStore.LookupEntry(titleId))
+            SetTitle(title);
+        else
+            LOG_ERROR("entities.player", "Player {} ({}) mastery title {} for class {} is not in CharTitles.dbc",
+                GetName(), GetGUID().ToString(), titleId, uint32(classId));
+    }
+
+    if (classId == getClass())
+        ApplyMasteryAura();
+
+    char const* name = "this class";
+    if (ChrClassesEntry const* entry = sChrClassesStore.LookupEntry(classId))
+    {
+        LocaleConstant locale = GetSession() ? GetSession()->GetSessionDbcLocale() : sWorld->GetDefaultDbcLocale();
+        if (char const* localized = entry->name[locale])
+            if (localized[0])
+                name = localized;
+    }
+
+    ChatHandler(GetSession()).PSendSysMessage("You have mastered {}.", name);
+}
+
+void Player::GrantClassMastery()
+{
+    if (m_isPlayerbot)
+        return;
+
+    uint32 cap = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
+    if (!cap || GetLevel() < cap)
+        return;
+
+    // The in-memory stamp belongs to whichever class was loaded last. A switch can
+    // reach GiveLevel before that stamp is replaced, so the stored row decides.
+    if (uint32 stamp = StoredClassMastery(getClass()))
+    {
+        m_classMasteredAt = stamp;
+        return;
+    }
+
+    MarkClassMastered(getClass(), GetLevel());
+}
+
+void Player::RetroactiveClassMastery()
+{
+    if (m_isPlayerbot)
+        return;
+
+    uint32 cap = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
+    if (!cap)
+        return;
+
+    bool currentRow = false;
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_MASTERY_BY_GUID);
+    stmt->SetData(0, GetGUID().GetCounter());
+    if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            uint8 classId = fields[0].Get<uint8>();
+            uint8 level = fields[1].Get<uint8>();
+            bool unset = fields[2].IsNull() || fields[2].Get<uint32>() == 0;
+            if (classId == getClass())
+            {
+                currentRow = true;
+                if (GetLevel() > level)
+                    level = GetLevel();
+            }
+            if (!unset || level < cap)
+                continue;
+
+            MarkClassMastered(classId, level);
+        } while (result->NextRow());
+    }
+
+    if (!currentRow && GetLevel() >= cap)
+        MarkClassMastered(getClass(), GetLevel());
+}
+
+void Player::LoadOtherClassWeaponSkills()
+{
+    m_otherClassWeaponSkill.clear();
+    if (m_isPlayerbot)
+        return;
+
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_SKILLS_BY_GUID);
+    stmt->SetData(0, GetGUID().GetCounter());
+    if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            if (fields[0].Get<uint8>() == getClass())
+                continue;
+
+            uint32 skillId = fields[1].Get<uint16>();
+            SkillLineEntry const* skill = sSkillLineStore.LookupEntry(skillId);
+            if (!skill || skill->categoryId != SKILL_CATEGORY_WEAPON)
+                continue;
+
+            uint16 value = fields[2].Get<uint16>();
+            uint16& highest = m_otherClassWeaponSkill[skillId];
+            if (value > highest)
+                highest = value;
+        } while (result->NextRow());
+    }
+}
+
+void Player::ApplyWeaponSkillFloor()
+{
+    if (m_isPlayerbot)
+        return;
+
+    float ratio = sConfigMgr->GetOption<float>("Multiclass.WeaponSkillInheritRatio", 0.5f);
+    if (ratio <= 0.f || m_otherClassWeaponSkill.empty())
+        return;
+
+    uint16 cap = GetMaxSkillValueForLevel();
+    if (!cap)
+        return;
+
+    for (auto const& other : m_otherClassWeaponSkill)
+    {
+        uint32 skillId = other.first;
+        if (!other.second)
+            continue;
+
+        SkillRaceClassInfoEntry const* rc = GetSkillRaceClassInfo(skillId, getRace(), getClass());
+        if (!rc || GetSkillRangeType(rc) != SKILL_RANGE_LEVEL)
+            continue;
+
+        uint32 inherited = uint32(std::floor(double(other.second) * double(ratio)));
+        if (inherited > cap)
+            inherited = cap;
+        if (!inherited)
+            continue;
+
+        bool known = HasSkill(skillId);
+        uint16 current = known ? GetPureSkillValue(skillId) : 0;
+        if (current >= inherited)
+            continue;
+
+        uint16 maxValue = cap;
+        if (known)
+        {
+            uint16 existingMax = GetPureMaxSkillValue(skillId);
+            if (existingMax > maxValue)
+                maxValue = existingMax;
+        }
+        if (inherited > maxValue)
+            inherited = maxValue;
+
+        uint16 step = known ? GetSkillStep(uint16(skillId)) : 0;
+        SetSkill(uint16(skillId), step, uint16(inherited), maxValue);
+    }
+}
+
+void Player::ApplyMulticlassClassEnter(uint8 oldClass)
+{
+    if (m_isPlayerbot)
+        return;
+
+    if (oldClass != getClass())
+        RemoveMasteryAura(oldClass);
+
+    LoadOtherClassWeaponSkills();
+    ApplyWeaponSkillFloor();
+    LoadClassMastery();
+    ApplyMasteryAura();
+}
+
 bool Player::MeetsRidingLevelRequirement(SpellInfo const* spell) const
 {
     if (!spell || !spell->HasAura(SPELL_AURA_MOUNTED))
@@ -2740,6 +3058,10 @@ void Player::GiveLevel(uint8 level)
 
     if (sWorld->getBoolConfig(CONFIG_ALWAYS_MAXSKILL)) // Max weapon skill when leveling up
         UpdateSkillsToMaxSkillsForLevel();
+
+    ApplyWeaponSkillFloor();
+    if (level >= sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL))
+        GrantClassMastery();
 
     _ApplyAllLevelScaleItemMods(true);
 
@@ -16531,7 +16853,10 @@ void Player::_LoadPetStable(uint8 petStableSlots, PreparedQueryResult result)
             petInfo.Type = PetType(fields[15].Get<uint8>());
             petInfo.Class = fields[16].Get<uint8>();
 
-            if (slot == PET_SAVE_AS_CURRENT)
+            // Another class's pets stay out of the stable and out of the summon list.
+            if (petInfo.Class && petInfo.Class != getClass())
+                m_petStable->ForeignPets.push_back(std::move(petInfo));
+            else if (slot == PET_SAVE_AS_CURRENT)
                 m_petStable->CurrentPet = std::move(petInfo);
             else if (slot >= PET_SAVE_FIRST_STABLE_SLOT && slot <= PET_SAVE_LAST_STABLE_SLOT)
                 m_petStable->StabledPets[slot - 1] = std::move(petInfo);
