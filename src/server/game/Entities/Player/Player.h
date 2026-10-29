@@ -601,6 +601,29 @@ enum AtLoginFlags
     AT_LOGIN_CHANGE_CLASS      = 0x1000
 };
 
+enum ClassChangeRequestResult : uint8
+{
+    CLASS_CHANGE_OK = 0,
+    CLASS_CHANGE_DISABLED,
+    CLASS_CHANGE_UNKNOWN,
+    CLASS_CHANGE_SAME,
+    CLASS_CHANGE_RACE,
+    CLASS_CHANGE_DEATH_KNIGHT,
+    CLASS_CHANGE_BOT,
+    CLASS_CHANGE_PENDING,
+    CLASS_CHANGE_COOLDOWN,
+    CLASS_CHANGE_COMBAT,
+    CLASS_CHANGE_BATTLEGROUND,
+    CLASS_CHANGE_CITY,
+    CLASS_CHANGE_MONEY
+};
+
+struct ClassChangeRequestStatus
+{
+    ClassChangeRequestResult Result = CLASS_CHANGE_UNKNOWN;
+    uint32 Extra = 0;
+};
+
 typedef std::map<uint32, QuestStatusData> QuestStatusMap;
 typedef std::unordered_set<uint32> RewardedQuestSet;
 
@@ -1734,6 +1757,10 @@ public:
     // the caller commits that transaction together with SaveToDB.
     void ApplyPendingClassChange(CharacterDatabaseTransaction trans);
     bool ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans);
+    // Queues the same logout switch as .character changeclass. Does not log the player out.
+    ClassChangeRequestStatus RequestClassChange(uint8 newClass);
+    [[nodiscard]] uint8 GetFreshClassLevel() const;
+    [[nodiscard]] bool IsInCapitalCity() const;
     // Temporary cross-class spells. They are never written to character_spell.
     void ApplyRetainedSpells(ChatHandler* handler = nullptr, bool announce = true);
     void SetRetainActivesSuppressed(bool suppressed);
