@@ -827,7 +827,11 @@ void WorldSession::LogoutPlayer(bool save, bool redirecting)
                 _player->SetUInt32Value(PLAYER_FIELD_BUYBACK_PRICE_1 + eslot, 0);
                 _player->SetUInt32Value(PLAYER_FIELD_BUYBACK_TIMESTAMP_1 + eslot, 0);
             }
-            _player->SaveToDB(false, true);
+            CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
+            if (_player->HasAtLoginFlag(AT_LOGIN_CHANGE_CLASS))
+                _player->ApplyPendingClassChange(trans);
+            _player->SaveToDB(trans, false, true);
+            CharacterDatabase.CommitTransaction(trans);
         }
 
         ///- Leave all channels before player delete...

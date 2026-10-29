@@ -5732,6 +5732,16 @@ bool Player::LoadFromDB(ObjectGuid playerGuid, CharacterDatabaseQueryHolder cons
         if (!HasAuraState((AuraStateType)m_spellInfo->CasterAuraState))
             aura->HandleAllEffects(itr->second, AURA_EFFECT_HANDLE_REAL, false);
     }
+
+    // Login fallback for a class switch that did not finish during logout.
+    // Runs after spells and inventory are in memory, and before the initial spell packet.
+    if (HasAtLoginFlag(AT_LOGIN_CHANGE_CLASS))
+    {
+        CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
+        ApplyPendingClassChange(trans);
+        SaveToDB(trans, false, false);
+        CharacterDatabase.CommitTransaction(trans);
+    }
     return true;
 }
 

@@ -1,0 +1,911 @@
+/*
+ * This file is part of the AzerothCore Project. See AUTHORS file for Copyright information
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#include "Player.h"
+#include "CharacterCache.h"
+#include "Chat.h"
+#include "Config.h"
+#include "DBCStores.h"
+#include "DatabaseEnv.h"
+#include "GameTime.h"
+#include "Guild.h"
+#include "GuildMgr.h"
+#include "Item.h"
+#include "Language.h"
+#include "Log.h"
+#include "Mail.h"
+#include "ObjectMgr.h"
+#include "Pet.h"
+#include "QuestDef.h"
+#include "Spell.h"
+#include "SpellAuras.h"
+#include "SpellMgr.h"
+
+#include <functional>
+#include <unordered_set>
+#include <vector>
+
+namespace
+{
+struct SpellSnap
+{
+    uint32 Id = 0;
+    uint8 SpecMask = 0;
+};
+
+struct TalentSnap
+{
+    uint32 Id = 0;
+    uint8 SpecMask = 0;
+};
+
+struct GlyphSnap
+{
+    uint8 Spec = 0;
+    uint16 Glyphs[MAX_GLYPH_SLOT_INDEX] = {};
+};
+
+struct ActionSnap
+{
+    uint8 Spec = 0;
+    uint8 Button = 0;
+    uint32 Action = 0;
+    uint8 Type = 0;
+};
+
+struct SkillSnap
+{
+    uint16 Id = 0;
+    uint16 Value = 0;
+    uint16 Max = 0;
+};
+
+struct QuestSnap
+{
+    uint32 Id = 0;
+    QuestStatusData Data;
+};
+
+struct ClassArchive
+{
+    std::vector<SpellSnap> Spells;
+    std::vector<TalentSnap> Talents;
+    std::vector<GlyphSnap> Glyphs;
+    std::vector<ActionSnap> Actions;
+    std::vector<SkillSnap> Skills;
+    std::vector<QuestSnap> Quests;
+    uint32 PetId = 0;
+};
+
+uint32 SpellFamilyForClass(uint8 classId)
+{
+    switch (classId)
+    {
+        case CLASS_WARRIOR:
+            return SPELLFAMILY_WARRIOR;
+        case CLASS_PALADIN:
+            return SPELLFAMILY_PALADIN;
+        case CLASS_HUNTER:
+            return SPELLFAMILY_HUNTER;
+        case CLASS_ROGUE:
+            return SPELLFAMILY_ROGUE;
+        case CLASS_PRIEST:
+            return SPELLFAMILY_PRIEST;
+        case CLASS_DEATH_KNIGHT:
+            return SPELLFAMILY_DEATHKNIGHT;
+        case CLASS_SHAMAN:
+            return SPELLFAMILY_SHAMAN;
+        case CLASS_MAGE:
+            return SPELLFAMILY_MAGE;
+        case CLASS_WARLOCK:
+            return SPELLFAMILY_WARLOCK;
+        case CLASS_DRUID:
+            return SPELLFAMILY_DRUID;
+        default:
+            return SPELLFAMILY_GENERIC;
+    }
+}
+
+bool IsClassSkill(uint32 skillId)
+{
+    if (!skillId || IsProfessionOrRidingSkill(skillId))
+        return false;
+
+    SkillLineEntry const* skill = sSkillLineStore.LookupEntry(skillId);
+    if (!skill)
+        return false;
+
+    return skill->categoryId == SKILL_CATEGORY_WEAPON
+        || skill->categoryId == SKILL_CATEGORY_CLASS
+        || skill->categoryId == SKILL_CATEGORY_ARMOR;
+}
+
+// Class family spells, plus weapon/armor/class skill-line spells that are not shared by every class.
+// SPELLFAMILY_GENERIC (item mounts, companions) and professions stay on the character.
+bool IsClassBoundSpell(uint32 spellId, uint8 playerClass)
+{
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+    if (!info)
+        return false;
+
+    uint32 family = SpellFamilyForClass(playerClass);
+    if (family != SPELLFAMILY_GENERIC && info->SpellFamilyName == family)
+        return true;
+
+    SkillLineAbilityMapBounds bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+    for (auto itr = bounds.first; itr != bounds.second; ++itr)
+    {
+        SkillLineAbilityEntry const* ability = itr->second;
+        if (!ability || IsProfessionOrRidingSkill(ability->SkillLine))
+            continue;
+
+        SkillLineEntry const* skill = sSkillLineStore.LookupEntry(ability->SkillLine);
+        if (!skill || !IsClassSkill(skill->id))
+            continue;
+
+        if (!ability->ClassMask || ability->ClassMask == CLASSMASK_ALL_PLAYABLE)
+            continue;
+
+        if ((ability->ClassMask & (1u << (playerClass - 1))) == 0)
+            continue;
+
+        return true;
+    }
+
+    return false;
+}
+
+void AppendClassDelete(CharacterDatabaseTransaction trans, CharacterDatabaseStatements id, uint32 guid,
+    uint8 playerClass)
+{
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(id);
+    stmt->SetData(0, guid);
+    stmt->SetData(1, playerClass);
+    trans->Append(stmt);
+}
+
+void AppendProgress(CharacterDatabaseTransaction trans, uint32 guid, uint8 playerClass, uint8 level, uint32 xp,
+    float rest, uint8 spec, uint32 levelTime, uint32 petId)
+{
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_REP_CLASS_PROGRESS);
+    stmt->SetData(0, guid);
+    stmt->SetData(1, playerClass);
+    stmt->SetData(2, level);
+    stmt->SetData(3, xp);
+    stmt->SetData(4, rest);
+    stmt->SetData(5, spec);
+    stmt->SetData(6, levelTime);
+    stmt->SetData(7, petId);
+    trans->Append(stmt);
+}
+
+void AppendPetSlot(CharacterDatabaseTransaction trans, uint32 owner, uint32 petId, uint8 slot, uint8 petClass)
+{
+    if (!petId)
+        return;
+
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CHAR_PET_CLASS_SLOT);
+    stmt->SetData(0, slot);
+    stmt->SetData(1, petClass);
+    stmt->SetData(2, owner);
+    stmt->SetData(3, petId);
+    trans->Append(stmt);
+}
+
+template <typename Snap>
+void LoadRows(CharacterDatabaseStatements id, uint32 guid, uint8 playerClass, std::vector<Snap>& out,
+    std::function<void(Field*, Snap&)> const& fill)
+{
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(id);
+    stmt->SetData(0, guid);
+    stmt->SetData(1, playerClass);
+    if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
+    {
+        do
+        {
+            Snap row;
+            fill(result->Fetch(), row);
+            out.push_back(row);
+        } while (result->NextRow());
+    }
+}
+
+ClassArchive LoadArchive(uint32 guid, uint8 playerClass)
+{
+    ClassArchive archive;
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_PROGRESS);
+    stmt->SetData(0, guid);
+    stmt->SetData(1, playerClass);
+    bool present = false;
+    if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
+    {
+        present = true;
+        archive.PetId = result->Fetch()[5].Get<uint32>();
+    }
+
+    if (!present)
+        return archive;
+
+    LoadRows<SpellSnap>(CHAR_SEL_CLASS_SPELL, guid, playerClass, archive.Spells, [](Field* fields, SpellSnap& row)
+    {
+        row.Id = fields[0].Get<uint32>();
+        row.SpecMask = fields[1].Get<uint8>();
+    });
+    LoadRows<TalentSnap>(CHAR_SEL_CLASS_TALENT, guid, playerClass, archive.Talents, [](Field* fields, TalentSnap& row)
+    {
+        row.Id = fields[0].Get<uint32>();
+        row.SpecMask = fields[1].Get<uint8>();
+    });
+    LoadRows<GlyphSnap>(CHAR_SEL_CLASS_GLYPH, guid, playerClass, archive.Glyphs, [](Field* fields, GlyphSnap& row)
+    {
+        row.Spec = fields[0].Get<uint8>();
+        for (uint8 i = 0; i < MAX_GLYPH_SLOT_INDEX; ++i)
+            row.Glyphs[i] = fields[1 + i].Get<uint16>();
+    });
+    LoadRows<ActionSnap>(CHAR_SEL_CLASS_ACTION, guid, playerClass, archive.Actions, [](Field* fields, ActionSnap& row)
+    {
+        row.Spec = fields[0].Get<uint8>();
+        row.Button = fields[1].Get<uint8>();
+        row.Action = fields[2].Get<uint32>();
+        row.Type = fields[3].Get<uint8>();
+    });
+    LoadRows<SkillSnap>(CHAR_SEL_CLASS_SKILL, guid, playerClass, archive.Skills, [](Field* fields, SkillSnap& row)
+    {
+        row.Id = fields[0].Get<uint16>();
+        row.Value = fields[1].Get<uint16>();
+        row.Max = fields[2].Get<uint16>();
+    });
+    LoadRows<QuestSnap>(CHAR_SEL_CLASS_QUEST, guid, playerClass, archive.Quests, [](Field* fields, QuestSnap& row)
+    {
+        row.Id = fields[0].Get<uint32>();
+        uint8 status = fields[1].Get<uint8>();
+        row.Data.Status = status < MAX_QUEST_STATUS ? QuestStatus(status) : QUEST_STATUS_INCOMPLETE;
+        row.Data.Explored = fields[2].Get<uint8>() != 0;
+        row.Data.Timer = fields[3].Get<uint32>();
+        for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+            row.Data.CreatureOrGOCount[i] = fields[4 + i].Get<uint16>();
+        for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+            row.Data.ItemCount[i] = fields[8 + i].Get<uint16>();
+        row.Data.PlayerCount = fields[14].Get<uint16>();
+    });
+
+    // Pet id is meaningful only when a progress row exists. Spell rows alone are not a snapshot.
+    if (!present)
+        archive.PetId = 0;
+
+    return archive;
+}
+
+bool ArchiveExists(uint32 guid, uint8 playerClass)
+{
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_PROGRESS);
+    stmt->SetData(0, guid);
+    stmt->SetData(1, playerClass);
+    return bool(CharacterDatabase.Query(stmt));
+}
+
+void StoreArchive(uint32 guid, uint8 playerClass, ClassArchive const& archive, uint8 level, uint32 xp, float rest,
+    uint8 spec, uint32 levelTime)
+{
+    CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
+    AppendClassDelete(trans, CHAR_DEL_CLASS_SPELL_BY_CLASS, guid, playerClass);
+    AppendClassDelete(trans, CHAR_DEL_CLASS_TALENT_BY_CLASS, guid, playerClass);
+    AppendClassDelete(trans, CHAR_DEL_CLASS_GLYPH_BY_CLASS, guid, playerClass);
+    AppendClassDelete(trans, CHAR_DEL_CLASS_ACTION_BY_CLASS, guid, playerClass);
+    AppendClassDelete(trans, CHAR_DEL_CLASS_SKILL_BY_CLASS, guid, playerClass);
+    AppendClassDelete(trans, CHAR_DEL_CLASS_QUEST_BY_CLASS, guid, playerClass);
+
+    for (SpellSnap const& row : archive.Spells)
+    {
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CLASS_SPELL);
+        stmt->SetData(0, guid);
+        stmt->SetData(1, playerClass);
+        stmt->SetData(2, row.Id);
+        stmt->SetData(3, row.SpecMask);
+        trans->Append(stmt);
+    }
+
+    for (TalentSnap const& row : archive.Talents)
+    {
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CLASS_TALENT);
+        stmt->SetData(0, guid);
+        stmt->SetData(1, playerClass);
+        stmt->SetData(2, row.Id);
+        stmt->SetData(3, row.SpecMask);
+        trans->Append(stmt);
+    }
+
+    for (GlyphSnap const& row : archive.Glyphs)
+    {
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CLASS_GLYPH);
+        stmt->SetData(0, guid);
+        stmt->SetData(1, playerClass);
+        stmt->SetData(2, row.Spec);
+        for (uint8 i = 0; i < MAX_GLYPH_SLOT_INDEX; ++i)
+            stmt->SetData(3 + i, row.Glyphs[i]);
+        trans->Append(stmt);
+    }
+
+    for (ActionSnap const& row : archive.Actions)
+    {
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CLASS_ACTION);
+        stmt->SetData(0, guid);
+        stmt->SetData(1, playerClass);
+        stmt->SetData(2, row.Spec);
+        stmt->SetData(3, row.Button);
+        stmt->SetData(4, row.Action);
+        stmt->SetData(5, row.Type);
+        trans->Append(stmt);
+    }
+
+    for (SkillSnap const& row : archive.Skills)
+    {
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CLASS_SKILL);
+        stmt->SetData(0, guid);
+        stmt->SetData(1, playerClass);
+        stmt->SetData(2, row.Id);
+        stmt->SetData(3, row.Value);
+        stmt->SetData(4, row.Max);
+        trans->Append(stmt);
+    }
+
+    for (QuestSnap const& row : archive.Quests)
+    {
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CLASS_QUEST);
+        uint8 index = 0;
+        stmt->SetData(index++, guid);
+        stmt->SetData(index++, playerClass);
+        stmt->SetData(index++, row.Id);
+        stmt->SetData(index++, uint8(row.Data.Status));
+        stmt->SetData(index++, uint8(row.Data.Explored));
+        stmt->SetData(index++, row.Data.Timer);
+        for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+            stmt->SetData(index++, row.Data.CreatureOrGOCount[i]);
+        for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+            stmt->SetData(index++, row.Data.ItemCount[i]);
+        stmt->SetData(index, row.Data.PlayerCount);
+        trans->Append(stmt);
+    }
+
+    AppendProgress(trans, guid, playerClass, level, xp, rest, spec, levelTime, archive.PetId);
+    CharacterDatabase.DirectCommitTransaction(trans);
+}
+
+void ConsumeArchive(CharacterDatabaseTransaction trans, uint32 guid, uint8 playerClass)
+{
+    AppendClassDelete(trans, CHAR_DEL_CLASS_SPELL_BY_CLASS, guid, playerClass);
+    AppendClassDelete(trans, CHAR_DEL_CLASS_TALENT_BY_CLASS, guid, playerClass);
+    AppendClassDelete(trans, CHAR_DEL_CLASS_GLYPH_BY_CLASS, guid, playerClass);
+    AppendClassDelete(trans, CHAR_DEL_CLASS_ACTION_BY_CLASS, guid, playerClass);
+    AppendClassDelete(trans, CHAR_DEL_CLASS_SKILL_BY_CLASS, guid, playerClass);
+    AppendClassDelete(trans, CHAR_DEL_CLASS_QUEST_BY_CLASS, guid, playerClass);
+}
+}
+
+// Fresh classes learn playercreateinfo skills, then level-scaled weapon/armor/class skills are raised to
+// level * 5 so learnSkillRewardedSpells grants ranks for the current level. LearnCustomSpells runs when
+// CONFIG_START_CUSTOM_SPELLS is set. learnQuestRewardedSpells is intentionally not called: it would
+// teach the previous class's quest rewards (charger, dreadsteed, death gate). Action bars are not copied
+// from playercreateinfo_action. Phase 1 still writes character_class_progress.level/xp/rest_bonus from the
+// live character so phase 2 can take those columns over. characters.level is unchanged and SetLevel is not used.
+// The switch row is kept with target_class 0 so last_switch_at can enforce the cooldown.
+bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
+{
+    uint8 oldClass = getClass();
+    if (!newClass || newClass == oldClass)
+        return false;
+
+    if (oldClass == CLASS_DEATH_KNIGHT || newClass == CLASS_DEATH_KNIGHT)
+    {
+        LOG_ERROR("entities.player", "Player {} ({}) blocked a Death Knight class change ({} -> {})",
+            GetName(), GetGUID().ToString(), uint32(oldClass), uint32(newClass));
+        return false;
+    }
+
+    if (!sObjectMgr->GetPlayerInfo(getRace(true), newClass) || !sChrClassesStore.LookupEntry(newClass))
+    {
+        LOG_ERROR("entities.player", "Player {} ({}) has no playercreateinfo for race {} class {}",
+            GetName(), GetGUID().ToString(), uint32(getRace(true)), uint32(newClass));
+        return false;
+    }
+
+    uint32 cost = sConfigMgr->GetOption<uint32>("Multiclass.SwitchCost", 0);
+    if (cost && !HasEnoughMoney(cost))
+    {
+        LOG_ERROR("entities.player", "Player {} ({}) cannot pay {} copper to change class",
+            GetName(), GetGUID().ToString(), cost);
+        return false;
+    }
+
+    uint32 guid = GetGUID().GetCounter();
+    bool returning = ArchiveExists(guid, newClass);
+    ClassArchive incoming = returning ? LoadArchive(guid, newClass) : ClassArchive();
+
+    ClassArchive outgoing;
+    for (auto const& itr : m_spells)
+    {
+        if (!itr.second || itr.second->State == PLAYERSPELL_REMOVED || itr.second->State == PLAYERSPELL_TEMPORARY)
+            continue;
+        if (!IsClassBoundSpell(itr.first, oldClass))
+            continue;
+
+        SpellSnap row;
+        row.Id = itr.first;
+        row.SpecMask = itr.second->specMask ? itr.second->specMask : uint8(SPEC_MASK_ALL);
+        outgoing.Spells.push_back(row);
+    }
+
+    for (auto const& itr : m_talents)
+    {
+        if (!itr.second || itr.second->State == PLAYERSPELL_REMOVED)
+            continue;
+
+        TalentSnap row;
+        row.Id = itr.first;
+        row.SpecMask = itr.second->specMask;
+        outgoing.Talents.push_back(row);
+    }
+
+    for (uint8 spec = 0; spec < MAX_TALENT_SPECS; ++spec)
+    {
+        GlyphSnap row;
+        row.Spec = spec;
+        for (uint8 slot = 0; slot < MAX_GLYPH_SLOT_INDEX; ++slot)
+            row.Glyphs[slot] = uint16(m_Glyphs[spec][slot]);
+        outgoing.Glyphs.push_back(row);
+    }
+
+    for (auto const& itr : m_actionButtons)
+    {
+        if (itr.second.uState == ACTIONBUTTON_DELETED)
+            continue;
+
+        ActionSnap row;
+        row.Spec = m_activeSpec;
+        row.Button = itr.first;
+        row.Action = itr.second.GetAction();
+        row.Type = uint8(itr.second.GetType());
+        outgoing.Actions.push_back(row);
+    }
+
+    for (uint8 spec = 0; spec < GetSpecsCount(); ++spec)
+    {
+        if (spec == m_activeSpec)
+            continue;
+
+        CharacterDatabasePreparedStatement* stmt =
+            CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHARACTER_ACTIONS_SPEC);
+        stmt->SetData(0, GetGUID().GetRawValue());
+        stmt->SetData(1, spec);
+        if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
+        {
+            do
+            {
+                Field* fields = result->Fetch();
+                ActionSnap row;
+                row.Spec = spec;
+                row.Button = fields[0].Get<uint8>();
+                row.Action = fields[1].Get<uint32>();
+                row.Type = fields[2].Get<uint8>();
+                outgoing.Actions.push_back(row);
+            } while (result->NextRow());
+        }
+    }
+
+    for (auto const& itr : mSkillStatus)
+    {
+        if (itr.second.uState == SKILL_DELETED || !IsClassSkill(itr.first))
+            continue;
+
+        SkillSnap row;
+        row.Id = uint16(itr.first);
+        row.Value = GetPureSkillValue(itr.first);
+        row.Max = GetPureMaxSkillValue(itr.first);
+        outgoing.Skills.push_back(row);
+    }
+
+    uint32 newClassMask = 1u << (newClass - 1);
+    for (auto const& itr : m_QuestStatus)
+    {
+        if (itr.second.Status == QUEST_STATUS_NONE || itr.second.Status == QUEST_STATUS_REWARDED)
+            continue;
+
+        Quest const* quest = sObjectMgr->GetQuestTemplate(itr.first);
+        if (!quest)
+            continue;
+
+        uint32 required = quest->GetRequiredClasses();
+        if (!required || (required & newClassMask) != 0)
+            continue;
+
+        QuestSnap row;
+        row.Id = itr.first;
+        row.Data = itr.second;
+        outgoing.Quests.push_back(row);
+    }
+
+    if (GetPetStable() && GetPetStable()->CurrentPet)
+        outgoing.PetId = GetPetStable()->CurrentPet->PetNumber;
+
+    StoreArchive(guid, oldClass, outgoing, GetLevel(), GetUInt32Value(PLAYER_XP), GetRestBonus(), GetActiveSpec(),
+        GetLevelPlayedTime());
+
+    RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
+    uint32 oldFamily = SpellFamilyForClass(oldClass);
+    if (oldFamily != SPELLFAMILY_GENERIC)
+    {
+        RemoveAppliedAuras([oldFamily](AuraApplication const* aurApp)
+        {
+            SpellInfo const* info = aurApp->GetBase()->GetSpellInfo();
+            return info && info->SpellFamilyName == oldFamily;
+        });
+    }
+
+    for (uint8 spec = 0; spec < MAX_TALENT_SPECS; ++spec)
+    {
+        for (uint8 slot = 0; slot < MAX_GLYPH_SLOT_INDEX; ++slot)
+        {
+            if (uint32 glyph = m_Glyphs[spec][slot])
+                if (GlyphPropertiesEntry const* entry = sGlyphPropertiesStore.LookupEntry(glyph))
+                    RemoveAurasDueToSpell(entry->SpellId);
+            m_Glyphs[spec][slot] = 0;
+        }
+    }
+    SetNeedToSaveGlyphs(true);
+
+    std::vector<uint32> talentIds;
+    for (auto const& itr : m_talents)
+        if (itr.second && itr.second->State != PLAYERSPELL_REMOVED)
+            talentIds.push_back(itr.first);
+
+    for (uint32 spellId : talentIds)
+    {
+        _removeTalentAurasAndSpells(spellId);
+        PlayerTalent const* talent = m_talents[spellId];
+        TalentEntry const* talentInfo = talent ? sTalentStore.LookupEntry(talent->talentID) : nullptr;
+        SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+        if (talentInfo && talentInfo->addToSpellBook && spellInfo && !spellInfo->HasAttribute(SPELL_ATTR0_PASSIVE)
+            && !spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL))
+            removeSpell(spellId, SPEC_MASK_ALL, false);
+
+        _removeTalent(spellId, SPEC_MASK_ALL);
+    }
+    m_usedTalentCount = 0;
+
+    std::vector<uint32> spellIds;
+    for (SpellSnap const& row : outgoing.Spells)
+        spellIds.push_back(row.Id);
+    for (uint32 spellId : spellIds)
+        removeSpell(spellId, SPEC_MASK_ALL, false);
+
+    for (SkillSnap const& row : outgoing.Skills)
+        if (HasSkill(row.Id))
+            SetSkill(row.Id, 0, 0, 0);
+
+    for (QuestSnap const& row : outgoing.Quests)
+    {
+        uint16 slot = FindQuestSlot(row.Id);
+        if (slot < MAX_QUEST_LOG_SIZE)
+            SetQuestSlot(slot, 0);
+        RemoveTimedQuest(row.Id);
+        RemoveActiveQuest(row.Id, false);
+    }
+
+    uint32 parkedPetId = 0;
+    if (PetStable* stable = GetPetStable())
+    {
+        if (stable->CurrentPet)
+        {
+            parkedPetId = stable->CurrentPet->PetNumber;
+            stable->CurrentPet->Class = oldClass;
+            stable->UnslottedPets.push_back(std::move(*stable->CurrentPet));
+            stable->CurrentPet.reset();
+        }
+    }
+
+    SetByteValue(UNIT_FIELD_BYTES_0, 1, newClass);
+
+    uint8 restoredSpec = GetActiveSpec();
+    if (returning)
+    {
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_PROGRESS);
+        stmt->SetData(0, guid);
+        stmt->SetData(1, newClass);
+        if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
+            restoredSpec = result->Fetch()[3].Get<uint8>();
+    }
+    if (restoredSpec >= GetSpecsCount())
+        restoredSpec = 0;
+    SetActiveSpec(restoredSpec);
+    SetByteValue(PLAYER_FIELD_BYTES, 2, restoredSpec);
+
+    std::unordered_set<uint32> spellsBeforeRestore;
+    for (auto const& itr : m_spells)
+        spellsBeforeRestore.insert(itr.first);
+    std::unordered_set<uint32> talentsBeforeRestore;
+    for (auto const& itr : m_talents)
+        talentsBeforeRestore.insert(itr.first);
+
+    if (returning)
+    {
+        for (SkillSnap const& row : incoming.Skills)
+        {
+            uint16 value = row.Value ? row.Value : 1;
+            uint16 max = row.Max ? row.Max : value;
+            SetSkill(row.Id, 0, value, max);
+        }
+        LearnDefaultSkills();
+        for (SpellSnap const& row : incoming.Spells)
+            addSpell(row.Id, row.SpecMask ? row.SpecMask : uint8(SPEC_MASK_ALL), true);
+    }
+    else
+    {
+        // See the comment on ChangeClass. Raising SKILL_RANGE_LEVEL skills teaches spell ranks for this level.
+        LearnDefaultSkills();
+        uint16 maxSkill = GetMaxSkillValueForLevel();
+        std::vector<uint32> skillIds;
+        for (auto const& itr : mSkillStatus)
+        {
+            if (itr.second.uState == SKILL_DELETED || !IsClassSkill(itr.first))
+                continue;
+            SkillRaceClassInfoEntry const* rc = GetSkillRaceClassInfo(itr.first, getRace(), getClass());
+            if (!rc || GetSkillRangeType(rc) != SKILL_RANGE_LEVEL)
+                continue;
+            skillIds.push_back(itr.first);
+        }
+        for (uint32 skillId : skillIds)
+            SetSkill(uint16(skillId), GetSkillStep(uint16(skillId)), maxSkill, maxSkill);
+        LearnCustomSpells();
+    }
+
+    for (TalentSnap const& row : incoming.Talents)
+        if (row.SpecMask)
+            addTalent(row.Id, row.SpecMask, 0);
+
+    InitTalentForLevel();
+
+    for (GlyphSnap const& row : incoming.Glyphs)
+    {
+        if (row.Spec >= MAX_TALENT_SPECS)
+            continue;
+        for (uint8 slot = 0; slot < MAX_GLYPH_SLOT_INDEX; ++slot)
+        {
+            if (row.Spec == GetActiveSpec())
+                SetGlyph(slot, row.Glyphs[slot], false);
+            else
+                m_Glyphs[row.Spec][slot] = row.Glyphs[slot];
+        }
+    }
+    SetNeedToSaveGlyphs(true);
+    for (uint8 slot = 0; slot < MAX_GLYPH_SLOT_INDEX; ++slot)
+    {
+        if (uint32 glyph = m_Glyphs[GetActiveSpec()][slot])
+            if (GlyphPropertiesEntry const* entry = sGlyphPropertiesStore.LookupEntry(glyph))
+            {
+                TriggerCastFlags flags = TriggerCastFlags(TRIGGERED_FULL_MASK &
+                    ~(TRIGGERED_IGNORE_SHAPESHIFT | TRIGGERED_IGNORE_CASTER_AURASTATE));
+                CastSpell(this, entry->SpellId, flags);
+            }
+    }
+
+    std::vector<ActionSnap> liveBars = returning ? incoming.Actions : outgoing.Actions;
+    m_actionButtons.clear();
+    CharacterDatabasePreparedStatement* actionDelete = CharacterDatabase.GetPreparedStatement(CHAR_DEL_CHAR_ACTION);
+    actionDelete->SetData(0, GetGUID().GetRawValue());
+    trans->Append(actionDelete);
+    for (ActionSnap const& row : liveBars)
+    {
+        if (!returning && row.Type == ACTION_BUTTON_SPELL)
+            continue;
+        if (row.Spec == GetActiveSpec())
+            addActionButton(row.Button, row.Action, row.Type);
+        else
+        {
+            CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_INS_CHAR_ACTION);
+            stmt->SetData(0, GetGUID().GetRawValue());
+            stmt->SetData(1, row.Spec);
+            stmt->SetData(2, row.Button);
+            stmt->SetData(3, row.Action);
+            stmt->SetData(4, row.Type);
+            trans->Append(stmt);
+        }
+    }
+
+    for (QuestSnap const& row : incoming.Quests)
+    {
+        m_QuestStatus[row.Id] = row.Data;
+        m_QuestStatusSave[row.Id] = true;
+        if (row.Data.Timer)
+            AddTimedQuest(row.Id);
+
+        uint16 slot = FindQuestSlot(0);
+        if (slot >= MAX_QUEST_LOG_SIZE)
+            continue;
+
+        uint32 slotTimer = 0;
+        if (row.Data.Timer)
+            slotTimer = uint32(GameTime::GetGameTime().count() + row.Data.Timer / IN_MILLISECONDS);
+        SetQuestSlot(slot, row.Id, slotTimer);
+        if (row.Data.Status == QUEST_STATUS_COMPLETE)
+            SetQuestSlotState(slot, QUEST_STATE_COMPLETE);
+        else if (row.Data.Status == QUEST_STATUS_FAILED)
+            SetQuestSlotState(slot, QUEST_STATE_FAIL);
+
+        for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+            if (row.Data.CreatureOrGOCount[i])
+                SetQuestSlotCounter(slot, i, row.Data.CreatureOrGOCount[i]);
+        if (row.Data.PlayerCount)
+            SetQuestSlotCounter(slot, QUEST_PVP_KILL_SLOT, row.Data.PlayerCount);
+    }
+
+    if (returning && incoming.PetId)
+    {
+        if (PetStable* stable = GetPetStable())
+        {
+            if (!stable->CurrentPet || stable->CurrentPet->PetNumber != incoming.PetId)
+            {
+                for (auto itr = stable->UnslottedPets.begin(); itr != stable->UnslottedPets.end(); ++itr)
+                {
+                    if (itr->PetNumber != incoming.PetId)
+                        continue;
+                    stable->CurrentPet = std::move(*itr);
+                    stable->UnslottedPets.erase(itr);
+                    break;
+                }
+            }
+        }
+    }
+
+    if (newClass != CLASS_WARRIOR && CanTitanGrip())
+        SetCanTitanGrip(false);
+    if (!HasSpell(674) && CanDualWield())
+        SetCanDualWield(false);
+    AutoUnequipOffhandIfNeed();
+
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        Item* item = GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!item)
+            continue;
+
+        ItemTemplate const* proto = item->GetTemplate();
+        if (!proto || !proto->AllowableClass || (proto->AllowableClass & getClassMask()))
+            continue;
+        if (item->IsNotEmptyBag())
+        {
+            LOG_ERROR("entities.player", "Player {} ({}) kept non-empty bag {} in slot {} after class change",
+                GetName(), GetGUID().ToString(), item->GetEntry(), uint32(slot));
+            continue;
+        }
+
+        ItemPosCountVec dest;
+        if (CanStoreItem(NULL_BAG, NULL_SLOT, dest, item, false) == EQUIP_ERR_OK)
+        {
+            RemoveItem(INVENTORY_SLOT_BAG_0, slot, true);
+            StoreItem(dest, item, true);
+            continue;
+        }
+
+        MoveItemFromInventory(INVENTORY_SLOT_BAG_0, slot, true);
+        CharacterDatabaseTransaction mailTrans = CharacterDatabase.BeginTransaction();
+        item->DeleteFromInventoryDB(mailTrans);
+        item->SaveToDB(mailTrans);
+        std::string subject = GetSession()->GetAcoreString(LANG_NOT_EQUIPPED_ITEM);
+        MailDraft(subject, "This item cannot be equipped by your new class.")
+            .AddItem(item)
+            .SendMailTo(mailTrans, this, MailSender(this, MAIL_STATIONERY_GM), MAIL_CHECK_MASK_COPIED);
+        CharacterDatabase.CommitTransaction(mailTrans);
+    }
+
+    if (isBeingLoaded())
+    {
+        // InitStatsForLevel clears ghost and GM flags. Aura load already restored them, so put them back
+        // before this login save or a dead character would be written alive.
+        bool ghost = HasPlayerFlag(PLAYER_FLAGS_GHOST);
+        bool gamemaster = HasPlayerFlag(PLAYER_FLAGS_GM);
+        DeathState deathState = getDeathState();
+        uint32 playerBytes2 = GetUInt32Value(PLAYER_FIELD_BYTES2);
+        InitStatsForLevel(true);
+        SetUInt32Value(PLAYER_FIELD_BYTES2, playerBytes2);
+        if (gamemaster)
+            SetPlayerFlag(PLAYER_FLAGS_GM);
+        if (ghost)
+        {
+            SetPlayerFlag(PLAYER_FLAGS_GHOST);
+            m_deathState = deathState;
+            AddUnitState(UNIT_STATE_ISOLATED);
+        }
+    }
+    else
+        InitDataForForm(false);
+
+    SetPower(getPowerType(), GetMaxPower(getPowerType()));
+
+    if (isBeingLoaded())
+    {
+        for (auto& itr : m_spells)
+            if (itr.second && itr.second->State == PLAYERSPELL_UNCHANGED && !spellsBeforeRestore.contains(itr.first))
+                itr.second->State = PLAYERSPELL_NEW;
+
+        for (auto& itr : m_talents)
+            if (itr.second && itr.second->State == PLAYERSPELL_UNCHANGED && !talentsBeforeRestore.contains(itr.first))
+                itr.second->State = PLAYERSPELL_NEW;
+    }
+
+    if (cost)
+        ModifyMoney(-int32(cost));
+
+    RemoveAtLoginFlag(AT_LOGIN_CHANGE_CLASS, false);
+
+    sCharacterCache->UpdateCharacterClass(GetGUID(), newClass);
+    if (uint32 guildId = GetGuildId())
+        if (Guild* guild = sGuildMgr->GetGuildById(guildId))
+            if (Guild::Member* member = guild->GetMember(GetGUID()))
+                member->SetStats(this);
+
+    ConsumeArchive(trans, guid, newClass);
+    AppendProgress(trans, guid, newClass, GetLevel(), GetUInt32Value(PLAYER_XP), GetRestBonus(), GetActiveSpec(),
+        GetLevelPlayedTime(), returning ? incoming.PetId : 0);
+    AppendPetSlot(trans, guid, parkedPetId, uint8(PET_SAVE_NOT_IN_SLOT), oldClass);
+    AppendPetSlot(trans, guid, returning ? incoming.PetId : 0, uint8(PET_SAVE_AS_CURRENT), newClass);
+
+    CharacterDatabasePreparedStatement* done = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CLASS_SWITCH_COMPLETE);
+    done->SetData(0, uint32(GameTime::GetGameTime().count()));
+    done->SetData(1, guid);
+    trans->Append(done);
+
+    LOG_INFO("entities.player", "Player {} ({}) changed class from {} to {}",
+        GetName(), GetGUID().ToString(), uint32(oldClass), uint32(newClass));
+    return true;
+}
+
+void Player::ApplyPendingClassChange(CharacterDatabaseTransaction trans)
+{
+    if (!HasAtLoginFlag(AT_LOGIN_CHANGE_CLASS) || !trans)
+        return;
+
+    auto clearPending = [this, trans]()
+    {
+        RemoveAtLoginFlag(AT_LOGIN_CHANGE_CLASS, false);
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CLASS_SWITCH_CLEAR);
+        stmt->SetData(0, GetGUID().GetCounter());
+        trans->Append(stmt);
+    };
+
+    if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", true))
+    {
+        clearPending();
+        LOG_INFO("entities.player", "Player {} ({}) skipped a class change because multiclass is disabled",
+            GetName(), GetGUID().ToString());
+        return;
+    }
+
+    uint8 targetClass = 0;
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_SWITCH);
+    stmt->SetData(0, GetGUID().GetCounter());
+    if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
+        targetClass = result->Fetch()[0].Get<uint8>();
+
+    if (!targetClass || !ChangeClass(targetClass, trans))
+    {
+        clearPending();
+        if (GetSession())
+            ChatHandler(GetSession()).SendSysMessage("Class change was cancelled.");
+        LOG_INFO("entities.player", "Player {} ({}) cancelled pending class change to {}",
+            GetName(), GetGUID().ToString(), uint32(targetClass));
+    }
+}

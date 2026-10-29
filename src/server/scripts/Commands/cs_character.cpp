@@ -17,10 +17,13 @@
 
 #include "AccountMgr.h"
 #include "AchievementMgr.h"
+#include "CharacterCache.h"
 #include "Chat.h"
 #include "CommandScript.h"
+#include "Config.h"
 #include "DBCStores.h"
 #include "DatabaseEnv.h"
+#include "GameTime.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -30,6 +33,13 @@
 #include "Timer.h"
 #include "World.h"
 #include "WorldSession.h"
+#ifdef MOD_PLAYERBOTS
+#include "PlayerbotsDatabase.h"
+#endif
+
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
 
 using namespace Acore::ChatCommands;
 
@@ -67,6 +77,7 @@ public:
             { "customize",      HandleCharacterCustomizeCommand,        rbac::RBAC_PERM_COMMAND_CHARACTER_CUSTOMIZE,      Console::Yes },
             { "changefaction",  HandleCharacterChangeFactionCommand,    rbac::RBAC_PERM_COMMAND_CHARACTER_CHANGEFACTION,  Console::Yes },
             { "changerace",     HandleCharacterChangeRaceCommand,       rbac::RBAC_PERM_COMMAND_CHARACTER_CHANGERACE,     Console::Yes },
+            { "changeclass",    HandleCharacterChangeClassCommand,      rbac::RBAC_PERM_COMMAND_CHARACTER_CHANGECLASS,    Console::Yes },
             { "changeaccount",  HandleCharacterChangeAccountCommand,    rbac::RBAC_PERM_COMMAND_CHARACTER_CHANGEACCOUNT,  Console::Yes },
             { "check",          characterCheckCommandTable },
             { "erase",          HandleCharacterEraseCommand,            rbac::RBAC_PERM_COMMAND_CHARACTER_ERASE,          Console::Yes },
@@ -530,6 +541,214 @@ public:
             CharacterDatabase.Execute(stmt);
         }
 
+        return true;
+    }
+
+    static Optional<uint8> ParseClassArgument(std::string name)
+    {
+        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+        if (name == "warrior")
+            return CLASS_WARRIOR;
+        if (name == "paladin")
+            return CLASS_PALADIN;
+        if (name == "hunter")
+            return CLASS_HUNTER;
+        if (name == "rogue")
+            return CLASS_ROGUE;
+        if (name == "priest")
+            return CLASS_PRIEST;
+        if (name == "deathknight" || name == "death_knight" || name == "dk")
+            return CLASS_DEATH_KNIGHT;
+        if (name == "shaman")
+            return CLASS_SHAMAN;
+        if (name == "mage")
+            return CLASS_MAGE;
+        if (name == "warlock")
+            return CLASS_WARLOCK;
+        if (name == "druid")
+            return CLASS_DRUID;
+
+        if (!name.empty() && isNumeric(name.c_str()))
+        {
+            uint32 id = uint32(std::strtoul(name.c_str(), nullptr, 10));
+            if (id && sChrClassesStore.LookupEntry(id))
+                return uint8(id);
+        }
+        return std::nullopt;
+    }
+
+    static bool IsRandomBotGuid(ObjectGuid::LowType guid)
+    {
+#ifdef MOD_PLAYERBOTS
+        PlayerbotsDatabasePreparedStatement* stmt =
+            PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_RANDOM_BOT_BY_BOT);
+        stmt->SetData(0, guid);
+        return bool(PlayerbotsDatabase.Query(stmt));
+#else
+        (void)guid;
+        return false;
+#endif
+    }
+
+    static bool HandleCharacterChangeClassCommand(ChatHandler* handler, std::string className,
+        Optional<PlayerIdentifier> player)
+    {
+        if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", true))
+        {
+            handler->SendSysMessage("Class change is disabled.");
+            return false;
+        }
+
+        Optional<uint8> parsed = ParseClassArgument(className);
+        if (!parsed)
+        {
+            handler->SendSysMessage(
+                "Unknown class. Use an id or warrior, paladin, hunter, rogue, priest, shaman, mage, warlock, druid.");
+            return false;
+        }
+
+        uint8 newClass = *parsed;
+        if (newClass == CLASS_DEATH_KNIGHT)
+        {
+            handler->SendSysMessage("Death Knights cannot change class yet.");
+            return false;
+        }
+
+        if (!player)
+            player = PlayerIdentifier::FromTargetOrSelf(handler);
+        if (!player)
+            return false;
+
+        uint8 currentClass = 0;
+        uint8 race = 0;
+        Player* online = player->GetConnectedPlayer();
+        if (online)
+        {
+            currentClass = online->getClass();
+            race = online->getRace(true);
+        }
+        else if (CharacterCacheEntry const* entry = sCharacterCache->GetCharacterCacheByGuid(player->GetGUID()))
+        {
+            currentClass = entry->Class;
+            race = entry->Race;
+        }
+        else
+        {
+            handler->SendErrorMessage(LANG_PLAYER_NOT_FOUND);
+            return false;
+        }
+
+        if (currentClass == CLASS_DEATH_KNIGHT)
+        {
+            handler->SendSysMessage("Death Knights cannot change class yet.");
+            return false;
+        }
+
+        if (currentClass == newClass)
+        {
+            handler->SendSysMessage("That character is already this class.");
+            return false;
+        }
+
+        if (!sObjectMgr->GetPlayerInfo(race, newClass) || !sChrClassesStore.LookupEntry(newClass))
+        {
+            handler->SendSysMessage("This race cannot be that class.");
+            return false;
+        }
+
+        if (IsRandomBotGuid(player->GetGUID().GetCounter())
+            || (online && online->GetSession() && online->GetSession()->IsBot()))
+        {
+            handler->SendSysMessage("Bots cannot change class.");
+            return false;
+        }
+
+        ObjectGuid::LowType guid = player->GetGUID().GetCounter();
+        uint32 now = uint32(GameTime::GetGameTime().count());
+        uint32 cooldown = sConfigMgr->GetOption<uint32>("Multiclass.SwitchCooldown", 0);
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_SWITCH);
+        stmt->SetData(0, guid);
+        if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
+        {
+            Field* fields = result->Fetch();
+            uint8 pending = fields[0].Get<uint8>();
+            uint32 lastSwitch = fields[2].Get<uint32>();
+            if (pending)
+            {
+                handler->SendSysMessage("A class change is already pending. Log out to finish it.");
+                return false;
+            }
+
+            if (cooldown && lastSwitch && uint64(lastSwitch) + cooldown > now)
+            {
+                uint32 remain = uint32(uint64(lastSwitch) + cooldown - now);
+                handler->PSendSysMessage("You must wait {} seconds before changing class again.", remain);
+                return false;
+            }
+        }
+
+        if (online)
+        {
+            if (online->IsInCombat())
+            {
+                handler->SendSysMessage("You cannot change class while in combat.");
+                return false;
+            }
+
+            if (online->InBattleground() || online->InArena())
+            {
+                handler->SendSysMessage("You cannot change class in a battleground or arena.");
+                return false;
+            }
+
+            if (sConfigMgr->GetOption<bool>("Multiclass.RequireCity", true))
+            {
+                AreaTableEntry const* zone = sAreaTableStore.LookupEntry(online->GetZoneId());
+                if (!zone || (zone->flags & AREA_FLAG_CAPITAL) == 0)
+                {
+                    handler->SendSysMessage("Class change is only allowed in a capital city.");
+                    return false;
+                }
+            }
+
+            uint32 cost = sConfigMgr->GetOption<uint32>("Multiclass.SwitchCost", 0);
+            if (cost && !online->HasEnoughMoney(cost))
+            {
+                handler->SendSysMessage("You do not have enough money to change class.");
+                return false;
+            }
+        }
+
+        stmt = CharacterDatabase.GetPreparedStatement(CHAR_REP_CLASS_SWITCH_REQUEST);
+        stmt->SetData(0, guid);
+        stmt->SetData(1, newClass);
+        stmt->SetData(2, now);
+        CharacterDatabase.DirectExecute(stmt);
+
+        if (online)
+        {
+            online->SetAtLoginFlag(AT_LOGIN_CHANGE_CLASS);
+            CharacterDatabasePreparedStatement* flagStmt =
+                CharacterDatabase.GetPreparedStatement(CHAR_UPD_ADD_AT_LOGIN_FLAG);
+            flagStmt->SetData(0, uint16(AT_LOGIN_CHANGE_CLASS));
+            flagStmt->SetData(1, guid);
+            CharacterDatabase.Execute(flagStmt);
+
+            handler->PSendSysMessage("Class change to {} is queued. Logging out to apply it.", className);
+            WorldSession* session = online->GetSession();
+            if (handler->GetSession() != session)
+                ChatHandler(session).PSendSysMessage(
+                    "Class change to {} is queued. Logging out to apply it.", className);
+            session->LogoutPlayer(true);
+            return true;
+        }
+
+        CharacterDatabasePreparedStatement* flagStmt =
+            CharacterDatabase.GetPreparedStatement(CHAR_UPD_ADD_AT_LOGIN_FLAG);
+        flagStmt->SetData(0, uint16(AT_LOGIN_CHANGE_CLASS));
+        flagStmt->SetData(1, guid);
+        CharacterDatabase.Execute(flagStmt);
+        handler->PSendSysMessage("Class change to {} will apply the next time that character logs in.", className);
         return true;
     }
 
