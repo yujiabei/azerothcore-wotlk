@@ -237,6 +237,8 @@ public:
     std::array<Optional<PetInfo>, MAX_PET_STABLES> StabledPets;     // PET_SAVE_FIRST_STABLE_SLOT - PET_SAVE_LAST_STABLE_SLOT
     uint32 MaxStabledPets = 0;
     std::vector<PetInfo> UnslottedPets;                             // PET_SAVE_NOT_IN_SLOT
+    // Pets parked for another class. Hidden from the stable and from summon lookup.
+    std::vector<PetInfo> ForeignPets;
 
     [[nodiscard]] PetInfo const* GetUnslottedHunterPet() const
     {

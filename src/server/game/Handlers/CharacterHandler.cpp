@@ -999,6 +999,17 @@ void WorldSession::HandlePlayerLoginFromDB(LoginQueryHolder const& holder)
         ChatHandler(this).SendNotification(LANG_RESET_TALENTS);
     }
 
+    if (pCurrChar->HasAtLoginFlag(AT_LOGIN_RESET_ARENA))
+    {
+        pCurrChar->SetArenaPoints(0);
+        CharacterDatabasePreparedStatement* arenaStmt =
+            CharacterDatabase.GetPreparedStatement(CHAR_UDP_CHAR_ARENA_POINTS);
+        arenaStmt->SetData(0, 0);
+        arenaStmt->SetData(1, pCurrChar->GetGUID().GetRawValue());
+        CharacterDatabase.Execute(arenaStmt);
+        pCurrChar->RemoveAtLoginFlag(AT_LOGIN_RESET_ARENA, true);
+    }
+
     if (pCurrChar->HasAtLoginFlag(AT_LOGIN_CHECK_ACHIEVS))
     {
         // If we process the check while players are loading they won't be notified of the changes.

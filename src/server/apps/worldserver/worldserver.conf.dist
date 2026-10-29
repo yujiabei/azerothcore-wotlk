@@ -2716,6 +2716,24 @@ Multiclass.RetainPassivesInPvP = 1
 Multiclass.SynergyLevel = 60
 
 #
+#    Multiclass.ResetArenaOnSwitch
+#        Description: 1 sets AT_LOGIN_RESET_ARENA when a class change succeeds. The next
+#                     login sets arena points to 0. Arena team membership is left alone.
+#                     0 keeps the points with the character.
+#        Default:     0
+
+Multiclass.ResetArenaOnSwitch = 0
+
+#
+#    Multiclass.MentorNpcEntry
+#        Description: creature_template entry of the class mentor. The pending world SQL
+#                     inserts 550000 and does not spawn it. Summon with: .npc add 550000
+#                     0 disables the gossip on that creature.
+#        Default:     550000
+
+Multiclass.MentorNpcEntry = 550000
+
+#
 ###################################################################################################
 
 ###################################################################################################

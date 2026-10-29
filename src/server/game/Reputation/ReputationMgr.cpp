@@ -134,6 +134,35 @@ ReputationRank ReputationMgr::GetBaseRank(FactionEntry const* factionEntry) cons
     return ReputationToRank(reputation);
 }
 
+void ReputationMgr::ApplyClassBaseChange(uint8 oldClass, uint8 newClass)
+{
+    if (!oldClass || !newClass || oldClass == newClass || !_player)
+        return;
+
+    uint8 race = _player->getRace(true);
+    for (auto& faction : _factions)
+    {
+        FactionEntry const* entry = sFactionStore.LookupEntry(faction.second.ID);
+        if (!entry)
+            continue;
+
+        int32 oldBase = sObjectMgr->GetBaseReputationOf(entry, race, oldClass);
+        int32 newBase = sObjectMgr->GetBaseReputationOf(entry, race, newClass);
+        if (oldBase == newBase)
+            continue;
+
+        int32 displayed = oldBase + faction.second.Standing;
+        if (displayed > Reputation_Cap)
+            displayed = Reputation_Cap;
+        else if (displayed < Reputation_Bottom)
+            displayed = Reputation_Bottom;
+
+        faction.second.Standing = displayed - newBase;
+        faction.second.needSave = true;
+        faction.second.needSend = true;
+    }
+}
+
 void ReputationMgr::ApplyForceReaction(uint32 faction_id, ReputationRank rank, bool apply)
 {
     if (apply)
