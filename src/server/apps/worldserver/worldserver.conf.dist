@@ -2631,6 +2631,91 @@ Multiclass.CatchUpAppliesToRest = 0
 Multiclass.DailyBonusXpPercentOfLevel = 25
 
 #
+#    Multiclass.Retain.Enable
+#        Description: Cross-class retained spells. 0 rejects the commands and removes
+#                     spells already applied for this session.
+#        Default:     1
+
+Multiclass.Retain.Enable = 1
+
+#
+#    Multiclass.Retain.Level1
+#    Multiclass.Retain.Level2
+#    Multiclass.Retain.Level3
+#        Description: Source-class levels that each add one spell slot and one talent slot.
+#                     A class below the first threshold has no slots. Each met threshold
+#                     adds one pair, including when the three values are out of order.
+#        Default:     20, 40, 60
+
+Multiclass.Retain.Level1 = 20
+Multiclass.Retain.Level2 = 40
+Multiclass.Retain.Level3 = 60
+
+#
+#    Multiclass.Retain.Cost
+#        Description: Copper charged when a retained pick is added, removed, or cleared.
+#        Default:     0
+
+Multiclass.Retain.Cost = 0
+
+#
+#    Multiclass.Retain.Cooldown
+#        Description: Seconds required between retained-pick changes. The timer survives
+#                     a clear. 0 disables it.
+#        Default:     0
+
+Multiclass.Retain.Cooldown = 0
+
+#
+#    Multiclass.Retain.EnforceRules
+#        Description: 1 rejects forms, summons, runes, combo points, stealth-only spells,
+#                     stance requirements, skill teachers, class mounts, teleports, and
+#                     a power type the current class cannot pay.
+#                     0 keeps the learned-spell, slot, rank, and battleground checks.
+#        Default:     1
+
+Multiclass.Retain.EnforceRules = 1
+
+#
+#    Multiclass.Retain.AllowSpells
+#        Description: Comma-separated spell ids that skip the rules above.
+#        Default:     <empty>
+
+Multiclass.Retain.AllowSpells =
+
+#
+#    Multiclass.Retain.DenySpells
+#        Description: Comma-separated spell ids that are always rejected.
+#        Default:     <empty>
+
+Multiclass.Retain.DenySpells =
+
+#
+#    Multiclass.RetainLevelGrace
+#        Description: A retained active uses the highest rank on its chain whose
+#                     SpellLevel is at most the current level plus this value, and
+#                     not above the rank the player picked.
+#        Default:     10
+
+Multiclass.RetainLevelGrace = 10
+
+#
+#    Multiclass.RetainPassivesInPvP
+#        Description: 1 keeps retained passives in battlegrounds and arenas.
+#                     0 removes them together with retained actives.
+#        Default:     1
+
+Multiclass.RetainPassivesInPvP = 1
+
+#
+#    Multiclass.SynergyLevel
+#        Description: When at least two classes have reached this level, one shared
+#                     pair of passive-only synergy slots unlocks.
+#        Default:     60
+
+Multiclass.SynergyLevel = 60
+
+#
 ###################################################################################################
 
 ###################################################################################################

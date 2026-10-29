@@ -5747,9 +5747,9 @@ bool Player::LoadFromDB(ObjectGuid playerGuid, CharacterDatabaseQueryHolder cons
         SaveToDB(trans, false, false);
         CharacterDatabase.CommitTransaction(trans);
     }
-
     // After a switch the new class row is committed, so the cache includes its level.
     RefreshHighestClassLevel();
+    ApplyRetainedSpells();
     return true;
 }
 

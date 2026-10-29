@@ -268,6 +268,7 @@ Player::Player(WorldSession* session): Unit(), m_mover(this), _cinematicMgr(*thi
     m_canParry = false;
     m_canBlock = false;
     m_canTitanGrip = false;
+    m_retainActivesSuppressed = false;
     m_ammoDPS = 0.0f;
 
     m_temporaryUnsummonedPetNumber = 0;
@@ -15911,6 +15912,7 @@ void Player::LoadActions(PreparedQueryResult result)
     if (result)
         _LoadActions(result);
 
+    PlaceRetainedActionButtons();
     SendActionButtons(1);
 }
 

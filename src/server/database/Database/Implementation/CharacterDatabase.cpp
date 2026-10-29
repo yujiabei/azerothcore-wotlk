@@ -712,6 +712,27 @@ void CharacterDatabaseConnection::DoPrepareStatements()
         "(guid, class, level, xp, rest_bonus, active_spec, level_play_time, current_pet_id, last_daily_bonus_at) "
         "VALUES (?, ?, ?, 0, 0, 0, 0, 0, ?) "
         "ON DUPLICATE KEY UPDATE last_daily_bonus_at = VALUES(last_daily_bonus_at)", CONNECTION_BOTH);
+    PrepareStatement(CHAR_SEL_CLASS_PROGRESS_BY_GUID,
+        "SELECT class, level FROM character_class_progress WHERE guid = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_SEL_CLASS_SPELL_BY_GUID,
+        "SELECT class, spell FROM character_class_spell WHERE guid = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_SEL_CLASS_TALENT_BY_GUID,
+        "SELECT class, spell FROM character_class_talent WHERE guid = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_SEL_RETAINED_SPELL,
+        "SELECT source_class, spell, kind, slot FROM character_retained_spell WHERE guid = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_DEL_RETAINED_SPELL,
+        "DELETE FROM character_retained_spell WHERE guid = ? AND spell = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_DEL_RETAINED_BY_CLASS,
+        "DELETE FROM character_retained_spell WHERE guid = ? AND source_class = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_DEL_RETAINED_BY_GUID,
+        "DELETE FROM character_retained_spell WHERE guid = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_INS_RETAINED_SPELL,
+        "INSERT INTO character_retained_spell (guid, source_class, spell, kind, slot) VALUES (?, ?, ?, ?, ?)",
+        CONNECTION_BOTH);
+    PrepareStatement(CHAR_SEL_RETAINED_CHANGE,
+        "SELECT changed_at FROM character_retained_change WHERE guid = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_REP_RETAINED_CHANGE,
+        "REPLACE INTO character_retained_change (guid, changed_at) VALUES (?, ?)", CONNECTION_BOTH);
 }
 
 CharacterDatabaseConnection::CharacterDatabaseConnection(MySQLConnectionInfo& connInfo) : MySQLConnection(connInfo)
