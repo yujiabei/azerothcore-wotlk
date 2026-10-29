@@ -22,6 +22,7 @@
 #include "Battleground.h"
 #include "BattlegroundMgr.h"
 #include "Chat.h"
+#include "Config.h"
 #include "DisableMgr.h"
 #include "GameTime.h"
 #include "Group.h"
@@ -33,6 +34,30 @@
 #include "ScriptMgr.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
+
+namespace
+{
+bool ArenaLevelGapBlocks(Player const* player)
+{
+    if (!player || !sConfigMgr->GetOption<bool>("Multiclass.Enable", true))
+        return false;
+
+    uint32 gap = sConfigMgr->GetOption<uint32>("Multiclass.ArenaMaxLevelGap", 10);
+    if (!gap)
+        return false;
+
+    return uint32(player->GetLevel()) + gap < player->GetHighestClassLevel();
+}
+
+void SendArenaLevelGapMessage(Player* player)
+{
+    if (!player || !player->GetSession())
+        return;
+
+    ChatHandler(player->GetSession()).SendSysMessage(
+        "Your current class level is too far below your highest class to enter the arena.");
+}
+}
 
 void WorldSession::HandleBattlemasterHelloOpcode(WorldPacket& recvData)
 {
@@ -798,6 +823,11 @@ void WorldSession::HandleBattlemasterJoinArena(WorldPacket& recvData)
             err = ERR_LFG_CANT_USE_BATTLEGROUND;
         else if (GetPlayer()->HasPlayerFlag(PLAYER_FLAGS_NO_PLAY_TIME)) // Assumed to only apply to full restriction rather than partial
             err = ERR_GROUP_JOIN_BATTLEGROUND_FAIL; // ERR_ARENA_EXPIRED_CAIS does not seem to be a result, so using this error instead
+        else if (ArenaLevelGapBlocks(GetPlayer()))
+        {
+            err = ERR_BATTLEGROUND_JOIN_FAILED;
+            SendArenaLevelGapMessage(GetPlayer());
+        }
 
         if (err <= 0)
         {
@@ -863,6 +893,18 @@ void WorldSession::HandleBattlemasterJoinArena(WorldPacket& recvData)
         }
 
         err = grp->CanJoinBattlegroundQueue(bgt, bgQueueTypeId, arenatype, arenatype, (bool)isRated, arenaslot);
+
+        if (err > 0)
+        {
+            grp->DoForAllMembers([&err](Player* member)
+            {
+                if (!ArenaLevelGapBlocks(member))
+                    return;
+
+                err = ERR_BATTLEGROUND_JOIN_FAILED;
+                SendArenaLevelGapMessage(member);
+            });
+        }
 
         // Check queue group members
         if (err)

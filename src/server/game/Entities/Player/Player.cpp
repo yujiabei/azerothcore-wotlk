@@ -2473,6 +2473,97 @@ void Player::GiveXP(uint32 xp, Unit* victim, float group_rate, bool isLFGReward)
     SetUInt32Value(PLAYER_XP, newXP);
 }
 
+uint8 Player::GetHighestClassLevel() const
+{
+    uint8 highest = GetLevel();
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_MAX_LEVEL);
+    stmt->SetData(0, GetGUID().GetCounter());
+    if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
+    {
+        Field* fields = result->Fetch();
+        if (!fields[0].IsNull())
+            highest = std::max(highest, uint8(std::min<uint64>(fields[0].Get<uint64>(), 255)));
+    }
+
+    return highest;
+}
+
+bool Player::MeetsRidingLevelRequirement(SpellInfo const* spell) const
+{
+    if (!spell || !spell->HasAura(SPELL_AURA_MOUNTED))
+        return true;
+    if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", true))
+        return true;
+
+    uint32 rank = 0;
+    SkillLineAbilityMapBounds bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spell->Id);
+    for (auto itr = bounds.first; itr != bounds.second; ++itr)
+    {
+        SkillLineAbilityEntry const* ability = itr->second;
+        if (!ability || ability->SkillLine != SKILL_RIDING)
+            continue;
+        if (ability->MinSkillLineRank > rank)
+            rank = ability->MinSkillLineRank;
+    }
+
+    if (!rank)
+    {
+        bool flying = false;
+        int32 flyAmount = 0;
+        int32 groundAmount = 0;
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        {
+            SpellEffectInfo const& effect = spell->Effects[i];
+            if (effect.IsAura(SPELL_AURA_MOD_INCREASE_MOUNTED_FLIGHT_SPEED)
+                || effect.IsAura(SPELL_AURA_MOD_MOUNTED_FLIGHT_SPEED_ALWAYS)
+                || effect.IsAura(SPELL_AURA_FLY))
+            {
+                flying = true;
+                flyAmount = std::max(flyAmount, effect.BasePoints);
+            }
+            else if (effect.IsAura(SPELL_AURA_MOD_INCREASE_MOUNTED_SPEED)
+                || effect.IsAura(SPELL_AURA_MOD_MOUNTED_SPEED_ALWAYS)
+                || effect.IsAura(SPELL_AURA_MOD_MOUNTED_SPEED_NOT_STACK))
+                groundAmount = std::max(groundAmount, effect.BasePoints);
+        }
+
+        // BasePoints is the percent minus 1: 60% is 59, 100% is 99, fast flight is 279 or 309.
+        if (flying)
+            rank = flyAmount >= 200 ? 300 : 225;
+        else if (groundAmount >= 90)
+            rank = 150;
+        else
+            rank = 75;
+    }
+    else if (rank <= 75)
+        rank = 75;
+    else if (rank <= 150)
+        rank = 150;
+    else if (rank <= 225)
+        rank = 225;
+    else
+        rank = 300;
+
+    uint8 required = 0;
+    switch (rank)
+    {
+        case 75:
+            required = sConfigMgr->GetOption<uint8>("Multiclass.Riding.Level.75", 20);
+            break;
+        case 150:
+            required = sConfigMgr->GetOption<uint8>("Multiclass.Riding.Level.150", 40);
+            break;
+        case 225:
+            required = sConfigMgr->GetOption<uint8>("Multiclass.Riding.Level.225", 60);
+            break;
+        default:
+            required = sConfigMgr->GetOption<uint8>("Multiclass.Riding.Level.300", 70);
+            break;
+    }
+
+    return !required || GetLevel() >= required;
+}
+
 // Update player to next level
 // Current player experience not update (must be update by caller)
 void Player::GiveLevel(uint8 level)
@@ -2483,6 +2574,11 @@ void Player::GiveLevel(uint8 level)
 
     if (!sScriptMgr->OnPlayerCanGiveLevel(this, level))
         return;
+
+    // The saved row for the class being played is stale, so the live level is part of the max.
+    // Mail and RaF run only when this grant raises the character-wide maximum.
+    uint8 highestBefore = GetHighestClassLevel();
+    bool newCharacterMax = level > highestBefore;
 
     if (Guild* guild = GetGuild())
         guild->UpdateMemberData(this, GUILD_MEMBER_DATA_LEVEL, level);
@@ -2557,7 +2653,7 @@ void Player::GiveLevel(uint8 level)
         pet->SynchronizeLevelWithOwner();
 
     MailLevelReward const* mailReward = sObjectMgr->GetMailLevelReward(level, getRaceMask());
-    if (mailReward && sScriptMgr->OnPlayerCanGiveMailRewardAtGiveLevel(this, level))
+    if (mailReward && newCharacterMax && sScriptMgr->OnPlayerCanGiveMailRewardAtGiveLevel(this, level))
     {
         //- TODO: Poor design of mail system
         CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
@@ -2569,14 +2665,15 @@ void Player::GiveLevel(uint8 level)
 
     // Refer-A-Friend
     if (GetSession()->GetRecruiterId())
-        if (level < sWorld->getIntConfig(CONFIG_MAX_RECRUIT_A_FRIEND_BONUS_PLAYER_LEVEL))
-            if (level % 2 == 0)
-            {
-                ++m_grantableLevels;
+        if (newCharacterMax)
+            if (level < sWorld->getIntConfig(CONFIG_MAX_RECRUIT_A_FRIEND_BONUS_PLAYER_LEVEL))
+                if (level % 2 == 0)
+                {
+                    ++m_grantableLevels;
 
-                if (!HasByteFlag(PLAYER_FIELD_BYTES, 1, 0x01))
-                    SetByteFlag(PLAYER_FIELD_BYTES, 1, 0x01);
-            }
+                    if (!HasByteFlag(PLAYER_FIELD_BYTES, 1, 0x01))
+                        SetByteFlag(PLAYER_FIELD_BYTES, 1, 0x01);
+                }
 
     SendQuestGiverStatusMultiple();
 
@@ -13970,8 +14067,13 @@ bool Player::canFlyInZone(uint32 mapid, uint32 zone, SpellInfo const* bySpell)
     if (v_map == MAP_NORTHREND && !bySpell->HasAttribute(SPELL_ATTR7_IGNORES_COLD_WEATHER_FLYING_REQUIREMENT))
     {
         if (!HasSpell(54197)) // 54197 = Cold Weather Flying
-        {
             return false;
+
+        if (sConfigMgr->GetOption<bool>("Multiclass.Enable", true))
+        {
+            uint8 required = sConfigMgr->GetOption<uint8>("Multiclass.Riding.Level.ColdWeather", 77);
+            if (required && GetLevel() < required)
+                return false;
         }
     }
 
