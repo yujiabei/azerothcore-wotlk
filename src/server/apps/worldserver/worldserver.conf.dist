@@ -2599,6 +2599,38 @@ Multiclass.Riding.Level.ColdWeather = 77
 Multiclass.AllowDeathKnight = 1
 
 #
+#    Multiclass.CatchUpXpRate
+#        Description: Experience multiplier while the current class level is below the
+#                     character's highest class level. Applies to kill, quest, exploration,
+#                     and battleground experience inside GiveXP, after Rate.XP.*.
+#                     1 or below disables the multiplier (a value of 0 does not wipe XP).
+#                     Rested and Refer-a-Friend bonuses stay on the un-multiplied amount.
+#        Default:     3
+
+Multiclass.CatchUpXpRate = 3
+
+#
+#    Multiclass.CatchUpAppliesToRest
+#        Description: 0 computes the rested bonus from the un-multiplied experience, so rest
+#                     is not consumed three times faster. 1 computes rest from the catch-up
+#                     amount. Refer-a-Friend always uses the un-multiplied amount.
+#        Default:     0 - (Rest on the base amount)
+#                     1 - (Rest on the multiplied amount)
+
+Multiclass.CatchUpAppliesToRest = 0
+
+#
+#    Multiclass.DailyBonusXpPercentOfLevel
+#        Description: Once per character per daily-quest reset, the first experience gain
+#                     on a class below the character's highest level also grants this
+#                     percent of PLAYER_NEXT_LEVEL_XP. The bonus is flat: it is not
+#                     multiplied by CatchUpXpRate and does not pass through rest or
+#                     Refer-a-Friend. 0 disables the bonus. Playerbots are excluded.
+#        Default:     25
+
+Multiclass.DailyBonusXpPercentOfLevel = 25
+
+#
 ###################################################################################################
 
 ###################################################################################################

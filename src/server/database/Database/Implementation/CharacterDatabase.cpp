@@ -653,11 +653,12 @@ void CharacterDatabaseConnection::DoPrepareStatements()
     PrepareStatement(CHAR_UPD_CLASS_SWITCH_CLEAR,
         "UPDATE character_class_switch SET target_class = 0 WHERE guid = ?", CONNECTION_BOTH);
     PrepareStatement(CHAR_SEL_CLASS_PROGRESS,
-        "SELECT level, xp, rest_bonus, active_spec, level_play_time, current_pet_id "
+        "SELECT level, xp, rest_bonus, active_spec, level_play_time, current_pet_id, last_daily_bonus_at "
         "FROM character_class_progress WHERE guid = ? AND class = ?", CONNECTION_BOTH);
     PrepareStatement(CHAR_REP_CLASS_PROGRESS,
-        "REPLACE INTO character_class_progress (guid, class, level, xp, rest_bonus, active_spec, level_play_time, current_pet_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", CONNECTION_BOTH);
+        "REPLACE INTO character_class_progress "
+        "(guid, class, level, xp, rest_bonus, active_spec, level_play_time, current_pet_id, last_daily_bonus_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", CONNECTION_BOTH);
     PrepareStatement(CHAR_DEL_CLASS_SPELL_BY_CLASS, "DELETE FROM character_class_spell WHERE guid = ? AND class = ?", CONNECTION_BOTH);
     PrepareStatement(CHAR_INS_CLASS_SPELL,
         "INSERT INTO character_class_spell (guid, class, spell, specMask) VALUES (?, ?, ?, ?)", CONNECTION_BOTH);
@@ -704,6 +705,13 @@ void CharacterDatabaseConnection::DoPrepareStatements()
         "INSERT INTO character_class_equipment (guid, class, slot, item) VALUES (?, ?, ?, ?)", CONNECTION_BOTH);
     PrepareStatement(CHAR_SEL_CLASS_EQUIPMENT,
         "SELECT slot, item FROM character_class_equipment WHERE guid = ? AND class = ? ORDER BY slot", CONNECTION_BOTH);
+    PrepareStatement(CHAR_SEL_CLASS_DAILY_BONUS,
+        "SELECT last_daily_bonus_at FROM character_class_progress WHERE guid = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_UPD_CLASS_DAILY_BONUS,
+        "INSERT INTO character_class_progress "
+        "(guid, class, level, xp, rest_bonus, active_spec, level_play_time, current_pet_id, last_daily_bonus_at) "
+        "VALUES (?, ?, ?, 0, 0, 0, 0, 0, ?) "
+        "ON DUPLICATE KEY UPDATE last_daily_bonus_at = VALUES(last_daily_bonus_at)", CONNECTION_BOTH);
 }
 
 CharacterDatabaseConnection::CharacterDatabaseConnection(MySQLConnectionInfo& connInfo) : MySQLConnection(connInfo)

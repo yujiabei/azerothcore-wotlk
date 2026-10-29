@@ -372,6 +372,9 @@ Player::Player(WorldSession* session): Unit(), m_mover(this), _cinematicMgr(*thi
     m_lastFallZ = 0;
 
     m_grantableLevels = 0;
+    m_highestClassLevel = 0;
+    m_classDailyBonusAt = 0;
+    m_isPlayerbot = false;
 
     m_ControlledByPlayer = true;
 
@@ -2439,19 +2442,41 @@ void Player::GiveXP(uint32 xp, Unit* victim, float group_rate, bool isLFGReward)
     if (HasPlayerFlag(PLAYER_FLAGS_PARTIAL_PLAY_TIME))
         xp = std::max(1u, xp / 2);
 
+    // Catch-up multiplies the amount after rates, the hook, favored exp, and partial play.
+    // Rest and RaF stay on this un-multiplied base unless CatchUpAppliesToRest is set.
+    // A rate of 1 or below leaves the grant unchanged, so 0 cannot wipe experience.
+    uint32 baseXp = xp;
+    if (GainsMulticlassXpBonus())
+    {
+        float rate = sConfigMgr->GetOption<float>("Multiclass.CatchUpXpRate", 3.0f);
+        if (rate > 1.f)
+        {
+            double scaled = double(baseXp) * double(rate);
+            xp = scaled >= 4294967295.0 ? 4294967295u : uint32(scaled);
+        }
+    }
+
     uint32 bonus_xp = 0;
     bool recruitAFriend = GetsRecruitAFriendBonus(true);
 
-    // RaF does NOT stack with rested experience
+    // RaF does not stack with rested experience. Both use the un-multiplied base,
+    // so catch-up plus RaF stays at rate * base + 2 * base (5x at the default rate).
     if (recruitAFriend)
-        bonus_xp = 2 * xp; // xp + bonus_xp must add up to 3 * xp for RaF; calculation for quests done client-side
-    else
-        bonus_xp = victim ? GetXPRestBonus(xp) : 0; // XP resting bonus
+        bonus_xp = 2 * baseXp; // base + bonus must add up to 3 * base for RaF; quests are client-side
+    else if (victim)
+    {
+        bool restOnBoosted = sConfigMgr->GetOption<bool>("Multiclass.CatchUpAppliesToRest", false);
+        bonus_xp = GetXPRestBonus(restOnBoosted ? xp : baseXp);
+    }
 
     // hooks and multipliers can modify the xp with a zero or negative value
     // check again before sending invalid xp to the client
     if (xp < 1)
         return;
+
+    // Flat daily bonus is not multiplied and does not pass through rest or RaF.
+    if (GainsMulticlassXpBonus())
+        bonus_xp += ClaimClassDailyBonus();
 
     SendLogXPGain(xp, victim, bonus_xp, recruitAFriend, group_rate);
 
@@ -2473,7 +2498,7 @@ void Player::GiveXP(uint32 xp, Unit* victim, float group_rate, bool isLFGReward)
     SetUInt32Value(PLAYER_XP, newXP);
 }
 
-uint8 Player::GetHighestClassLevel() const
+void Player::RefreshHighestClassLevel()
 {
     uint8 highest = GetLevel();
     CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_MAX_LEVEL);
@@ -2485,7 +2510,88 @@ uint8 Player::GetHighestClassLevel() const
             highest = std::max(highest, uint8(std::min<uint64>(fields[0].Get<uint64>(), 255)));
     }
 
-    return highest;
+    m_highestClassLevel = highest;
+}
+
+uint8 Player::GetHighestClassLevel() const
+{
+    return std::max(GetLevel(), m_highestClassLevel);
+}
+
+void Player::LoadClassDailyBonusTime()
+{
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_DAILY_BONUS);
+    stmt->SetData(0, GetGUID().GetCounter());
+    if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
+    {
+        do
+        {
+            uint32 stored = result->Fetch()[0].Get<uint32>();
+            if (stored > m_classDailyBonusAt)
+                m_classDailyBonusAt = stored;
+        } while (result->NextRow());
+    }
+}
+
+void Player::CachePlayerbotFlag()
+{
+    m_isPlayerbot = GetSession() && GetSession()->IsBot();
+#ifdef MOD_PLAYERBOTS
+    if (!m_isPlayerbot)
+    {
+        PlayerbotsDatabasePreparedStatement* stmt =
+            PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_RANDOM_BOT_BY_BOT);
+        stmt->SetData(0, GetGUID().GetCounter());
+        m_isPlayerbot = bool(PlayerbotsDatabase.Query(stmt));
+    }
+#endif
+}
+
+bool Player::GainsMulticlassXpBonus() const
+{
+    if (m_isPlayerbot || !sConfigMgr->GetOption<bool>("Multiclass.Enable", true))
+        return false;
+
+    return GetLevel() < GetHighestClassLevel();
+}
+
+uint32 Player::ClaimClassDailyBonus()
+{
+    if (!GainsMulticlassXpBonus())
+        return 0;
+
+    uint32 percent = sConfigMgr->GetOption<uint32>("Multiclass.DailyBonusXpPercentOfLevel", 25);
+    if (!percent)
+        return 0;
+
+    int64 nextReset = sWorld->GetNextDailyQuestsResetTime().count();
+    if (nextReset <= 0)
+        return 0;
+
+    uint32 periodStart = nextReset > DAY ? uint32(nextReset - DAY) : 0;
+    if (m_classDailyBonusAt && m_classDailyBonusAt >= periodStart)
+        return 0;
+
+    uint32 nextLevelXp = GetUInt32Value(PLAYER_NEXT_LEVEL_XP);
+    if (!nextLevelXp)
+        return 0;
+
+    uint32 bonus = uint32((uint64(nextLevelXp) * percent) / 100);
+    if (!bonus)
+        return 0;
+
+    m_classDailyBonusAt = uint32(GameTime::GetGameTime().count());
+
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CLASS_DAILY_BONUS);
+    stmt->SetData(0, GetGUID().GetCounter());
+    stmt->SetData(1, getClass());
+    stmt->SetData(2, GetLevel());
+    stmt->SetData(3, m_classDailyBonusAt);
+    CharacterDatabase.DirectExecute(stmt);
+
+    ChatHandler(GetSession()).PSendSysMessage(
+        "You gain {} bonus experience for practicing a lower-level class today.", bonus);
+    return bonus;
 }
 
 bool Player::MeetsRidingLevelRequirement(SpellInfo const* spell) const
@@ -2676,6 +2782,9 @@ void Player::GiveLevel(uint8 level)
                 }
 
     SendQuestGiverStatusMultiple();
+
+    if (level > m_highestClassLevel)
+        m_highestClassLevel = level;
 
     sScriptMgr->OnPlayerLevelChanged(this, oldLevel);
 }
