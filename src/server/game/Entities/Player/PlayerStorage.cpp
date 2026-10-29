@@ -5751,6 +5751,8 @@ bool Player::LoadFromDB(ObjectGuid playerGuid, CharacterDatabaseQueryHolder cons
     RefreshHighestClassLevel();
     LoadOtherClassWeaponSkills();
     ApplyWeaponSkillFloor();
+    // Classes already at the cap, including rows stored before mastery existed.
+    RetroactiveClassMastery();
     LoadClassMastery();
     ApplyRetainedSpells();
     return true;

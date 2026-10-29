@@ -754,12 +754,15 @@ void CharacterDatabaseConnection::DoPrepareStatements()
     PrepareStatement(CHAR_SEL_CLASS_MASTERY_LIST,
         "SELECT class, level, mastered_at FROM character_class_progress WHERE guid = ? AND mastered_at > 0",
         CONNECTION_BOTH);
+    PrepareStatement(CHAR_SEL_CLASS_MASTERY_BY_GUID,
+        "SELECT class, level, mastered_at FROM character_class_progress WHERE guid = ?", CONNECTION_BOTH);
     PrepareStatement(CHAR_UPD_CLASS_MASTERY,
         "INSERT INTO character_class_progress "
         "(guid, class, level, xp, rest_bonus, active_spec, level_play_time, current_pet_id, "
         "last_daily_bonus_at, mastered_at) "
         "VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0, ?) "
-        "ON DUPLICATE KEY UPDATE mastered_at = IF(mastered_at = 0, VALUES(mastered_at), mastered_at)",
+        "ON DUPLICATE KEY UPDATE mastered_at = IF(mastered_at IS NULL OR mastered_at = 0, "
+        "VALUES(mastered_at), mastered_at)",
         CONNECTION_BOTH);
 }
 

@@ -2678,7 +2678,7 @@ void Player::RemoveMasteryAura(uint8 classId)
 
 void Player::ApplyMasteryAura()
 {
-    if (!m_classMasteredAt || !IsInWorld())
+    if (m_isPlayerbot || !m_classMasteredAt || !IsInWorld())
         return;
 
     uint32 spellId = MulticlassClassOption("Multiclass.MasteryAura.", getClass());
@@ -2700,54 +2700,133 @@ void Player::ApplyMasteryAura()
 void Player::LoadClassMastery()
 {
     m_classMasteredAt = 0;
-    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_MASTERY);
-    stmt->SetData(0, GetGUID().GetCounter());
-    stmt->SetData(1, getClass());
-    if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
-        m_classMasteredAt = result->Fetch()[0].Get<uint32>();
+    if (m_isPlayerbot)
+        return;
+
+    m_classMasteredAt = StoredClassMastery(getClass());
 }
 
-void Player::GrantClassMastery()
+uint32 Player::StoredClassMastery(uint8 classId) const
 {
-    if (m_classMasteredAt)
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_MASTERY);
+    stmt->SetData(0, GetGUID().GetCounter());
+    stmt->SetData(1, classId);
+    PreparedQueryResult result = CharacterDatabase.Query(stmt);
+    if (!result)
+        return 0;
+
+    Field const& field = result->Fetch()[0];
+    if (field.IsNull())
+        return 0;
+
+    return field.Get<uint32>();
+}
+
+void Player::MarkClassMastered(uint8 classId, uint8 level)
+{
+    if (m_isPlayerbot || !classId || !level)
         return;
 
     uint32 now = uint32(GameTime::GetGameTime().count());
     if (!now)
         now = 1;
-    m_classMasteredAt = now;
+    if (classId == getClass())
+        m_classMasteredAt = now;
 
     CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CLASS_MASTERY);
     stmt->SetData(0, GetGUID().GetCounter());
-    stmt->SetData(1, getClass());
-    stmt->SetData(2, GetLevel());
-    stmt->SetData(3, m_classMasteredAt);
+    stmt->SetData(1, classId);
+    stmt->SetData(2, level);
+    stmt->SetData(3, now);
     CharacterDatabase.DirectExecute(stmt);
 
-    if (uint32 titleId = MulticlassClassOption("Multiclass.MasteryTitle.", getClass()))
+    if (uint32 titleId = MulticlassClassOption("Multiclass.MasteryTitle.", classId))
     {
         if (CharTitlesEntry const* title = sCharTitlesStore.LookupEntry(titleId))
             SetTitle(title);
         else
-            LOG_ERROR("entities.player", "Player {} ({}) mastery title {} is not in CharTitles.dbc",
-                GetName(), GetGUID().ToString(), titleId);
+            LOG_ERROR("entities.player", "Player {} ({}) mastery title {} for class {} is not in CharTitles.dbc",
+                GetName(), GetGUID().ToString(), titleId, uint32(classId));
     }
 
-    ApplyMasteryAura();
+    if (classId == getClass())
+        ApplyMasteryAura();
 
     char const* name = "this class";
-    if (ChrClassesEntry const* entry = sChrClassesStore.LookupEntry(getClass()))
-        if (GetSession())
-            if (char const* localized = entry->name[GetSession()->GetSessionDbcLocale()])
-                if (localized[0])
-                    name = localized;
+    if (ChrClassesEntry const* entry = sChrClassesStore.LookupEntry(classId))
+    {
+        LocaleConstant locale = GetSession() ? GetSession()->GetSessionDbcLocale() : sWorld->GetDefaultDbcLocale();
+        if (char const* localized = entry->name[locale])
+            if (localized[0])
+                name = localized;
+    }
 
     ChatHandler(GetSession()).PSendSysMessage("You have mastered {}.", name);
+}
+
+void Player::GrantClassMastery()
+{
+    if (m_isPlayerbot)
+        return;
+
+    uint32 cap = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
+    if (!cap || GetLevel() < cap)
+        return;
+
+    // The in-memory stamp belongs to whichever class was loaded last. A switch can
+    // reach GiveLevel before that stamp is replaced, so the stored row decides.
+    if (uint32 stamp = StoredClassMastery(getClass()))
+    {
+        m_classMasteredAt = stamp;
+        return;
+    }
+
+    MarkClassMastered(getClass(), GetLevel());
+}
+
+void Player::RetroactiveClassMastery()
+{
+    if (m_isPlayerbot)
+        return;
+
+    uint32 cap = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
+    if (!cap)
+        return;
+
+    bool currentRow = false;
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_MASTERY_BY_GUID);
+    stmt->SetData(0, GetGUID().GetCounter());
+    if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
+    {
+        do
+        {
+            Field* fields = result->Fetch();
+            uint8 classId = fields[0].Get<uint8>();
+            uint8 level = fields[1].Get<uint8>();
+            bool unset = fields[2].IsNull() || fields[2].Get<uint32>() == 0;
+            if (classId == getClass())
+            {
+                currentRow = true;
+                if (GetLevel() > level)
+                    level = GetLevel();
+            }
+            if (!unset || level < cap)
+                continue;
+
+            MarkClassMastered(classId, level);
+        } while (result->NextRow());
+    }
+
+    if (!currentRow && GetLevel() >= cap)
+        MarkClassMastered(getClass(), GetLevel());
 }
 
 void Player::LoadOtherClassWeaponSkills()
 {
     m_otherClassWeaponSkill.clear();
+    if (m_isPlayerbot)
+        return;
+
     CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_SKILLS_BY_GUID);
     stmt->SetData(0, GetGUID().GetCounter());
     if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
@@ -2773,6 +2852,9 @@ void Player::LoadOtherClassWeaponSkills()
 
 void Player::ApplyWeaponSkillFloor()
 {
+    if (m_isPlayerbot)
+        return;
+
     float ratio = sConfigMgr->GetOption<float>("Multiclass.WeaponSkillInheritRatio", 0.5f);
     if (ratio <= 0.f || m_otherClassWeaponSkill.empty())
         return;
@@ -2819,6 +2901,9 @@ void Player::ApplyWeaponSkillFloor()
 
 void Player::ApplyMulticlassClassEnter(uint8 oldClass)
 {
+    if (m_isPlayerbot)
+        return;
+
     if (oldClass != getClass())
         RemoveMasteryAura(oldClass);
 

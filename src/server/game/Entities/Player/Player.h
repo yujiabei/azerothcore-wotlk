@@ -3062,6 +3062,9 @@ private:
     void ApplyWeaponSkillFloor();
     void LoadClassMastery();
     void GrantClassMastery();
+    void MarkClassMastered(uint8 classId, uint8 level);
+    void RetroactiveClassMastery();
+    [[nodiscard]] uint32 StoredClassMastery(uint8 classId) const;
     void ApplyMasteryAura();
     void RemoveMasteryAura(uint8 classId);
     [[nodiscard]] uint32 MulticlassClassOption(char const* prefix, uint8 classId) const;
