@@ -1733,6 +1733,11 @@ public:
     void ApplyPendingClassChange(CharacterDatabaseTransaction trans);
     bool ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans);
     [[nodiscard]] uint8 GetHighestClassLevel() const;
+    void RefreshHighestClassLevel();
+    void LoadClassDailyBonusTime();
+    void CachePlayerbotFlag();
+    [[nodiscard]] bool GainsMulticlassXpBonus() const;
+    uint32 ClaimClassDailyBonus();
     [[nodiscard]] bool MeetsRidingLevelRequirement(SpellInfo const* spell) const;
     void LearnCustomSpells();
     void LearnDefaultSkills();
@@ -3001,6 +3006,13 @@ protected:
     bool m_needZoneUpdate;
 
 private:
+    // Cached so GiveXP does not query. 0 until login or a class switch refreshes it.
+    uint8 m_highestClassLevel;
+    // Unix time of this character's last daily off-class bonus.
+    uint32 m_classDailyBonusAt;
+    // Session bot flag plus the playerbots table, read once at login.
+    bool m_isPlayerbot;
+
     // internal common parts for CanStore/StoreItem functions
     InventoryResult CanStoreItem_InSpecificSlot(uint8 bag, uint8 slot, ItemPosCountVec& dest, ItemTemplate const* pProto, uint32& count, bool swap, Item* pSrcItem) const;
     InventoryResult CanStoreItem_InBag(uint8 bag, ItemPosCountVec& dest, ItemTemplate const* pProto, uint32& count, bool merge, bool non_specialized, Item* pSrcItem, uint8 skip_bag, uint8 skip_slot) const;

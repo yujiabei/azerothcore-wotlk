@@ -98,6 +98,7 @@ struct ProgressSnap
     uint8 Spec = 0;
     uint32 LevelTime = 0;
     uint32 PetId = 0;
+    uint32 DailyBonusAt = 0;
 };
 
 struct ClassArchive
@@ -199,7 +200,7 @@ void AppendClassDelete(CharacterDatabaseTransaction trans, CharacterDatabaseStat
 }
 
 void AppendProgress(CharacterDatabaseTransaction trans, uint32 guid, uint8 playerClass, uint8 level, uint32 xp,
-    float rest, uint8 spec, uint32 levelTime, uint32 petId)
+    float rest, uint8 spec, uint32 levelTime, uint32 petId, uint32 dailyBonusAt)
 {
     CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_REP_CLASS_PROGRESS);
     stmt->SetData(0, guid);
@@ -210,6 +211,7 @@ void AppendProgress(CharacterDatabaseTransaction trans, uint32 guid, uint8 playe
     stmt->SetData(5, spec);
     stmt->SetData(6, levelTime);
     stmt->SetData(7, petId);
+    stmt->SetData(8, dailyBonusAt);
     trans->Append(stmt);
 }
 
@@ -260,6 +262,7 @@ ProgressSnap LoadProgress(uint32 guid, uint8 playerClass)
         snap.Spec = fields[3].Get<uint8>();
         snap.LevelTime = fields[4].Get<uint32>();
         snap.PetId = fields[5].Get<uint32>();
+        snap.DailyBonusAt = fields[6].Get<uint32>();
         if (!snap.Level)
             snap.Level = 1;
     }
@@ -321,7 +324,7 @@ ClassArchive LoadArchive(uint32 guid, uint8 playerClass, ProgressSnap const& pro
 }
 
 void StoreArchive(uint32 guid, uint8 playerClass, ClassArchive const& archive, uint8 level, uint32 xp, float rest,
-    uint8 spec, uint32 levelTime, std::vector<EquipSnap> const& equipment)
+    uint8 spec, uint32 levelTime, uint32 dailyBonusAt, std::vector<EquipSnap> const& equipment)
 {
     CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
     AppendClassDelete(trans, CHAR_DEL_CLASS_SPELL_BY_CLASS, guid, playerClass);
@@ -414,7 +417,7 @@ void StoreArchive(uint32 guid, uint8 playerClass, ClassArchive const& archive, u
         trans->Append(stmt);
     }
 
-    AppendProgress(trans, guid, playerClass, level, xp, rest, spec, levelTime, archive.PetId);
+    AppendProgress(trans, guid, playerClass, level, xp, rest, spec, levelTime, archive.PetId, dailyBonusAt);
     CharacterDatabase.DirectCommitTransaction(trans);
 }
 
@@ -735,7 +738,9 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
     }
 
     StoreArchive(guid, oldClass, outgoing, GetLevel(), GetUInt32Value(PLAYER_XP), GetRestBonus(), GetActiveSpec(),
-        GetLevelPlayedTime(), equipped);
+        GetLevelPlayedTime(), m_classDailyBonusAt, equipped);
+    // The old class row is committed. Legacy level and catch-up both read this cache.
+    RefreshHighestClassLevel();
 
     RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
     // InitStatsForLevel clears the mount display. Drop the aura too so a low level cannot stay mounted.
@@ -830,6 +835,9 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
     uint32 targetXp = returning ? incomingProgress.Xp : 0;
     float targetRest = returning ? incomingProgress.Rest : 0.f;
     uint32 targetLevelTime = returning ? incomingProgress.LevelTime : 0;
+    // One grant per character per day. A class row may hold an older stamp.
+    if (incomingProgress.DailyBonusAt > m_classDailyBonusAt)
+        m_classDailyBonusAt = incomingProgress.DailyBonusAt;
     if (!targetLevel)
         targetLevel = 1;
     if (targetLevel > maxPlayerLevel)
@@ -1035,7 +1043,7 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
 
     ConsumeArchive(trans, guid, newClass);
     AppendProgress(trans, guid, newClass, GetLevel(), GetUInt32Value(PLAYER_XP), GetRestBonus(), GetActiveSpec(),
-        GetLevelPlayedTime(), returning ? incoming.PetId : 0);
+        GetLevelPlayedTime(), returning ? incoming.PetId : 0, m_classDailyBonusAt);
     AppendPetSlot(trans, guid, parkedPetId, uint8(PET_SAVE_NOT_IN_SLOT), oldClass);
     AppendPetSlot(trans, guid, returning ? incoming.PetId : 0, uint8(PET_SAVE_AS_CURRENT), newClass);
 

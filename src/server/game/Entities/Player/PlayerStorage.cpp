@@ -5733,6 +5733,11 @@ bool Player::LoadFromDB(ObjectGuid playerGuid, CharacterDatabaseQueryHolder cons
             aura->HandleAllEffects(itr->second, AURA_EFFECT_HANDLE_REAL, false);
     }
 
+    // Bots are excluded from catch-up. Read the flag once; GiveXP must not query.
+    CachePlayerbotFlag();
+    // Before a login switch, so the outgoing snapshot keeps today's grant.
+    LoadClassDailyBonusTime();
+
     // Login fallback for a class switch that did not finish during logout.
     // Runs after spells and inventory are in memory, and before the initial spell packet.
     if (HasAtLoginFlag(AT_LOGIN_CHANGE_CLASS))
@@ -5742,6 +5747,9 @@ bool Player::LoadFromDB(ObjectGuid playerGuid, CharacterDatabaseQueryHolder cons
         SaveToDB(trans, false, false);
         CharacterDatabase.CommitTransaction(trans);
     }
+
+    // After a switch the new class row is committed, so the cache includes its level.
+    RefreshHighestClassLevel();
     return true;
 }
 
