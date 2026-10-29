@@ -449,6 +449,9 @@ void Player::UpdateNextMailTimeAndUnreads()
 
     for (Mail const* mail : GetMails())
     {
+        if (mail->state == MAIL_STATE_DELETED)
+            continue;
+
         if (mail->deliver_time > cTime)
         {
             if (!m_nextMailDelivereTime || m_nextMailDelivereTime > mail->deliver_time)

@@ -392,7 +392,7 @@ void WorldSession::HandleMailMarkAsRead(WorldPacket& recvData)
 
     Player* player = _player;
     Mail* m = player->GetMail(mailId);
-    if (m && m->state != MAIL_STATE_DELETED)
+    if (m && m->state != MAIL_STATE_DELETED && !(m->checked & MAIL_CHECK_MASK_READ))
     {
         if (player->unReadMails)
             --player->unReadMails;
@@ -425,6 +425,11 @@ void WorldSession::HandleMailDelete(WorldPacket& recvData)
             player->SendMailResult(mailId, MAIL_DELETED, MAIL_ERR_INTERNAL_ERROR);
             return;
         }
+
+        time_t now = GameTime::GetGameTime().count();
+        bool delivered = m->deliver_time <= now && now <= m->expire_time;
+        if (!(m->checked & MAIL_CHECK_MASK_READ) && delivered && player->unReadMails)
+            --player->unReadMails;
 
         m->state = MAIL_STATE_DELETED;
 
@@ -867,9 +872,10 @@ void WorldSession::HandleMailCreateTextItem(WorldPacket& recvData)
     }
 }
 
-//TODO Fix me! ... this void has probably bad condition, but good data are sent
 void WorldSession::HandleQueryNextMailTime(WorldPacket& /*recvData*/)
 {
+    _player->UpdateNextMailTimeAndUnreads();
+
     WorldPacket data(MSG_QUERY_NEXT_MAIL_TIME, 8);
 
     if (_player->unReadMails > 0)
@@ -882,6 +888,9 @@ void WorldSession::HandleQueryNextMailTime(WorldPacket& /*recvData*/)
         std::set<uint32> sentSenders;
         for (Mail const* mail : _player->GetMails())
         {
+            if (mail->state == MAIL_STATE_DELETED)
+                continue;
+
             // must be not checked yet
             if (mail->checked & MAIL_CHECK_MASK_READ)
                 continue;
@@ -906,7 +915,14 @@ void WorldSession::HandleQueryNextMailTime(WorldPacket& /*recvData*/)
                 break;
         }
 
-        data.put<uint32>(4, count);
+        if (count)
+            data.put<uint32>(4, count);
+        else
+        {
+            data.Initialize(MSG_QUERY_NEXT_MAIL_TIME, 8);
+            data << float(-DAY);
+            data << uint32(0);
+        }
     }
     else
     {
