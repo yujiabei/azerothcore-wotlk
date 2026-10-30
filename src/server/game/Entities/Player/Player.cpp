@@ -2510,10 +2510,16 @@ void Player::RefreshHighestClassLevel()
     {
         Field* fields = result->Fetch();
         if (!fields[0].IsNull())
-            highest = std::max(highest, uint8(std::min<uint64>(fields[0].Get<uint64>(), 255)));
+        {
+            uint64 stored = fields[0].Get<uint64>();
+            if (stored > highest)
+                highest = uint8(std::min<uint64>(stored, 255));
+        }
     }
 
     m_highestClassLevel = highest;
+    LOG_DEBUG("multiclass", "Highest class level for {} ({}) is {} (live {})",
+        GetName(), GetGUID().ToString(), uint32(m_highestClassLevel), uint32(GetLevel()));
 }
 
 uint8 Player::GetHighestClassLevel() const

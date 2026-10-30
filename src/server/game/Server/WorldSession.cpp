@@ -828,10 +828,17 @@ void WorldSession::LogoutPlayer(bool save, bool redirecting)
                 _player->SetUInt32Value(PLAYER_FIELD_BUYBACK_TIMESTAMP_1 + eslot, 0);
             }
             CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
-            if (_player->HasAtLoginFlag(AT_LOGIN_CHANGE_CLASS))
+            // Commit the swap before SMSG_LOGOUT_COMPLETE. The character list reads
+            // characters.class on another connection, and an async commit still shows the old class.
+            // A login that starts in that window also applies the pending switch a second time.
+            bool pendingClassChange = _player->HasAtLoginFlag(AT_LOGIN_CHANGE_CLASS);
+            if (pendingClassChange)
                 _player->ApplyPendingClassChange(trans);
             _player->SaveToDB(trans, false, true);
-            CharacterDatabase.CommitTransaction(trans);
+            if (pendingClassChange)
+                CharacterDatabase.DirectCommitTransaction(trans);
+            else
+                CharacterDatabase.CommitTransaction(trans);
         }
 
         ///- Leave all channels before player delete...

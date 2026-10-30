@@ -703,8 +703,12 @@ void CharacterDatabaseConnection::DoPrepareStatements()
         "FROM character_class_quest WHERE guid = ? AND class = ?", CONNECTION_BOTH);
     PrepareStatement(CHAR_UPD_CHAR_PET_CLASS_SLOT,
         "UPDATE character_pet SET slot = ?, class = ? WHERE owner = ? AND id = ?", CONNECTION_BOTH);
+    // level is TINYINT. A prepared MAX(level) comes back as one raw byte, and Get<uint64>()
+    // reads eight. The extra bytes are heap data, so the value is clamped to 255 and the
+    // legacy grant then hits LegacyLevelCap (60). CAST makes the buffer a real BIGINT.
     PrepareStatement(CHAR_SEL_CLASS_MAX_LEVEL,
-        "SELECT MAX(level) FROM character_class_progress WHERE guid = ?", CONNECTION_BOTH);
+        "SELECT CAST(IFNULL(MAX(`level`), 0) AS UNSIGNED) FROM character_class_progress WHERE guid = ?",
+        CONNECTION_BOTH);
     PrepareStatement(CHAR_DEL_CLASS_EQUIPMENT_BY_CLASS,
         "DELETE FROM character_class_equipment WHERE guid = ? AND class = ?", CONNECTION_BOTH);
     PrepareStatement(CHAR_INS_CLASS_EQUIPMENT,

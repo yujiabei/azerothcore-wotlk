@@ -5740,12 +5740,13 @@ bool Player::LoadFromDB(ObjectGuid playerGuid, CharacterDatabaseQueryHolder cons
 
     // Login fallback for a class switch that did not finish during logout.
     // Runs after spells and inventory are in memory, and before the initial spell packet.
+    // A cancelled flag must not save: that write can replace a logout swap that already committed.
     if (HasAtLoginFlag(AT_LOGIN_CHANGE_CLASS))
     {
         CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
-        ApplyPendingClassChange(trans);
-        SaveToDB(trans, false, false);
-        CharacterDatabase.CommitTransaction(trans);
+        if (ApplyPendingClassChange(trans))
+            SaveToDB(trans, false, false);
+        CharacterDatabase.DirectCommitTransaction(trans);
     }
     // After a switch the new class row is committed, so the cache includes its level.
     RefreshHighestClassLevel();

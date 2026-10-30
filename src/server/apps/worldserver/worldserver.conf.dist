@@ -762,6 +762,8 @@ Logger.playerbots=5,Console Playerbots
 # Logger.entities.player.skills=4,Console Server
 # Logger.entities.player.trade=4,Console Server
 # Logger.entities.player=4,Console Server
+# Multiclass switch diagnostics. 5 is debug. Uncomment while investigating a class change.
+# Logger.multiclass=5,Console Server
 # Logger.entities.transport=4,Console Server
 # Logger.entities.unit.ai=4,Console Server
 # Logger.entities.unit=4,Console Server
