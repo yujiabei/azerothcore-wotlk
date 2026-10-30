@@ -484,24 +484,27 @@ uint8 LegacyStartLevel(Player const* player)
 {
     uint8 highest = player->GetHighestClassLevel();
     uint8 minLevel = sConfigMgr->GetOption<uint8>("Multiclass.LegacyMinLevel", 20);
-    if (highest < minLevel)
-        return 1;
-
     float ratio = sConfigMgr->GetOption<float>("Multiclass.LegacyLevelRatio", 0.5f);
-    if (ratio <= 0.f)
-        return 1;
-
     uint32 cap = sConfigMgr->GetOption<uint32>("Multiclass.LegacyLevelCap", 60);
     uint32 maxPlayer = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
-    uint32 scaled = uint32(std::floor(double(highest) * double(ratio)));
-    if (cap && scaled > cap)
-        scaled = cap;
-    if (scaled > maxPlayer)
-        scaled = maxPlayer;
-    if (scaled <= 1)
-        return 1;
+    uint8 result = 1;
 
-    return uint8(scaled);
+    if (highest >= minLevel && ratio > 0.f)
+    {
+        uint32 scaled = uint32(std::floor(double(highest) * double(ratio)));
+        if (cap && scaled > cap)
+            scaled = cap;
+        if (scaled > maxPlayer)
+            scaled = maxPlayer;
+        if (scaled > 1)
+            result = uint8(scaled);
+    }
+
+    LOG_DEBUG("multiclass",
+        "Legacy start for {} ({}) highest {} min {} ratio {} cap {} max {} result {}",
+        player->GetName(), player->GetGUID().ToString(), uint32(highest), uint32(minLevel),
+        ratio, cap, maxPlayer, uint32(result));
+    return result;
 }
 
 void MailCarriedItem(Player* player, Item* item, std::string const& body)
@@ -853,6 +856,7 @@ bool IsRandomBotGuid(ObjectGuid::LowType guid)
 bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
 {
     uint8 oldClass = getClass();
+    uint8 levelBefore = GetLevel();
     if (!newClass || newClass == oldClass)
         return false;
 
@@ -1230,12 +1234,16 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
     m_Played_time[PLAYED_TIME_LEVEL] = targetLevelTime;
     InitGlyphsForLevel();
 
-    std::unordered_set<uint32> spellsBeforeRestore;
+    // Ids already stored in character_spell. A snapshot spell that is not in this set must be
+    // inserted again. REMOVED entries are not stored; reviving one has to delete the old row.
+    std::unordered_set<uint32> spellsFromDb;
     for (auto const& itr : m_spells)
-        spellsBeforeRestore.insert(itr.first);
-    std::unordered_set<uint32> talentsBeforeRestore;
+        if (itr.second && itr.second->State != PLAYERSPELL_REMOVED && itr.second->State != PLAYERSPELL_NEW)
+            spellsFromDb.insert(itr.first);
+    std::unordered_set<uint32> talentsFromDb;
     for (auto const& itr : m_talents)
-        talentsBeforeRestore.insert(itr.first);
+        if (itr.second && itr.second->State != PLAYERSPELL_REMOVED && itr.second->State != PLAYERSPELL_NEW)
+            talentsFromDb.insert(itr.first);
 
     if (returning)
     {
@@ -1243,7 +1251,26 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
             ClampSkillToLevel(this, row.Id, row.Value);
         LearnDefaultSkills();
         for (SpellSnap const& row : incoming.Spells)
-            addSpell(row.Id, row.SpecMask ? row.SpecMask : uint8(SPEC_MASK_ALL), true);
+        {
+            uint8 mask = row.SpecMask ? row.SpecMask : uint8(SPEC_MASK_ALL);
+            auto itr = m_spells.find(row.Id);
+            // addSpell leaves a REMOVED spell removed when its spec mask already matches,
+            // and the following save then deletes it without inserting the snapshot copy.
+            // REMOVED means the row is still in character_spell, so the replacement must be CHANGED.
+            bool revived = itr != m_spells.end() && itr->second && itr->second->State == PLAYERSPELL_REMOVED;
+            if (revived)
+            {
+                delete itr->second;
+                m_spells.erase(itr);
+            }
+            addSpell(row.Id, mask, true);
+            if (revived)
+            {
+                itr = m_spells.find(row.Id);
+                if (itr != m_spells.end() && itr->second)
+                    itr->second->State = PLAYERSPELL_CHANGED;
+            }
+        }
     }
     else
     {
@@ -1391,16 +1418,46 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
 
     SetPower(getPowerType(), GetMaxPower(getPowerType()));
 
-    if (isBeingLoaded())
+    // isBeingLoaded() stores a learned spell as UNCHANGED, which _SaveSpells will not insert.
+    // Anything restored from the snapshot that is not already in character_spell has to be NEW,
+    // or CHANGED when a removed row must be deleted first. Do this on the logout path too:
+    // a spell revived above is NEW only when the player is not loading.
+    for (SpellSnap const& row : incoming.Spells)
     {
-        for (auto& itr : m_spells)
-            if (itr.second && itr.second->State == PLAYERSPELL_UNCHANGED && !spellsBeforeRestore.contains(itr.first))
-                itr.second->State = PLAYERSPELL_NEW;
-
-        for (auto& itr : m_talents)
-            if (itr.second && itr.second->State == PLAYERSPELL_UNCHANGED && !talentsBeforeRestore.contains(itr.first))
-                itr.second->State = PLAYERSPELL_NEW;
+        auto itr = m_spells.find(row.Id);
+        if (itr == m_spells.end() || !itr->second || spellsFromDb.contains(row.Id))
+            continue;
+        if (itr->second->State == PLAYERSPELL_REMOVED)
+            itr->second->State = PLAYERSPELL_CHANGED;
+        else if (itr->second->State != PLAYERSPELL_NEW && itr->second->State != PLAYERSPELL_CHANGED)
+            itr->second->State = PLAYERSPELL_NEW;
     }
+    for (TalentSnap const& row : incoming.Talents)
+    {
+        auto itr = m_talents.find(row.Id);
+        if (itr == m_talents.end() || !itr->second || talentsFromDb.contains(row.Id))
+            continue;
+        if (itr->second->State == PLAYERSPELL_REMOVED)
+            itr->second->State = PLAYERSPELL_CHANGED;
+        else if (itr->second->State != PLAYERSPELL_NEW && itr->second->State != PLAYERSPELL_CHANGED)
+            itr->second->State = PLAYERSPELL_NEW;
+    }
+    // Default skills learned above are not snapshot rows. A fresh class still has to insert them.
+    for (auto& itr : m_spells)
+        if (itr.second && itr.second->State == PLAYERSPELL_UNCHANGED && !spellsFromDb.contains(itr.first))
+            itr.second->State = PLAYERSPELL_NEW;
+    for (auto& itr : m_talents)
+        if (itr.second && itr.second->State == PLAYERSPELL_UNCHANGED && !talentsFromDb.contains(itr.first))
+            itr.second->State = PLAYERSPELL_NEW;
+
+    uint32 liveSpells = 0;
+    for (auto const& itr : m_spells)
+        if (itr.second && itr.second->State != PLAYERSPELL_REMOVED && itr.second->Active)
+            ++liveSpells;
+    LOG_DEBUG("multiclass",
+        "ChangeClass {} ({}) {} -> {} level {} -> {} returning {} snapshot spells {} live spells {}",
+        GetName(), GetGUID().ToString(), uint32(oldClass), uint32(newClass), uint32(levelBefore),
+        uint32(GetLevel()), returning ? 1 : 0, uint32(incoming.Spells.size()), liveSpells);
 
     if (cost)
         ModifyMoney(-int32(cost));
@@ -1560,10 +1617,14 @@ ClassChangeRequestStatus Player::RequestClassChange(uint8 newClass)
     CharacterDatabase.DirectExecute(stmt);
 
     SetAtLoginFlag(AT_LOGIN_CHANGE_CLASS);
+    // Synchronous. An async OR can land after logout has already stored the cleared flag
+    // and make the next login run the switch a second time.
     CharacterDatabasePreparedStatement* flagStmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_ADD_AT_LOGIN_FLAG);
     flagStmt->SetData(0, uint16(AT_LOGIN_CHANGE_CLASS));
     flagStmt->SetData(1, GetGUID().GetCounter());
-    CharacterDatabase.Execute(flagStmt);
+    CharacterDatabase.DirectExecute(flagStmt);
+    LOG_DEBUG("multiclass", "Queued class change for {} ({}) {} -> {}",
+        GetName(), GetGUID().ToString(), uint32(getClass()), uint32(newClass));
 
     status.Result = CLASS_CHANGE_OK;
     return status;
@@ -1583,10 +1644,13 @@ void MailCityChangeRefusal(Player* player)
     CharacterDatabase.CommitTransaction(mailTrans);
 }
 
-void Player::ApplyPendingClassChange(CharacterDatabaseTransaction trans)
+bool Player::ApplyPendingClassChange(CharacterDatabaseTransaction trans)
 {
     if (!HasAtLoginFlag(AT_LOGIN_CHANGE_CLASS) || !trans)
-        return;
+        return false;
+
+    LOG_DEBUG("multiclass", "Apply pending class change for {} ({}) class {} level {}",
+        GetName(), GetGUID().ToString(), uint32(getClass()), uint32(GetLevel()));
 
     auto clearPending = [this, trans]()
     {
@@ -1601,7 +1665,7 @@ void Player::ApplyPendingClassChange(CharacterDatabaseTransaction trans)
         clearPending();
         LOG_INFO("entities.player", "Player {} ({}) skipped a class change because multiclass is disabled",
             GetName(), GetGUID().ToString());
-        return;
+        return false;
     }
 
     // The command already checked the city before logout. This covers an offline queue
@@ -1618,7 +1682,7 @@ void Player::ApplyPendingClassChange(CharacterDatabaseTransaction trans)
         }
         LOG_INFO("entities.player", "Player {} ({}) cancelled a class change outside a capital city",
             GetName(), GetGUID().ToString());
-        return;
+        return false;
     }
 
     uint8 targetClass = 0;
@@ -1627,6 +1691,9 @@ void Player::ApplyPendingClassChange(CharacterDatabaseTransaction trans)
     if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
         targetClass = result->Fetch()[0].Get<uint8>();
 
+    LOG_DEBUG("multiclass", "Pending target for {} ({}) is {}",
+        GetName(), GetGUID().ToString(), uint32(targetClass));
+
     if (!targetClass || !ChangeClass(targetClass, trans))
     {
         clearPending();
@@ -1634,5 +1701,8 @@ void Player::ApplyPendingClassChange(CharacterDatabaseTransaction trans)
             ChatHandler(GetSession()).SendSysMessage("Class change was cancelled.");
         LOG_INFO("entities.player", "Player {} ({}) cancelled pending class change to {}",
             GetName(), GetGUID().ToString(), uint32(targetClass));
+        return false;
     }
+
+    return true;
 }

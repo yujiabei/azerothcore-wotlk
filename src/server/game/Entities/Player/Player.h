@@ -1754,9 +1754,9 @@ public:
     void learnSpell(uint32 spellId, bool temporary = false, bool learnFromSkill = false);
     void removeSpell(uint32 spellId, uint8 removeSpecMask, bool onlyTemporary);
     void resetSpells();
-    // Applies the pending logout class switch. Live fixups are appended to `trans`;
-    // the caller commits that transaction together with SaveToDB.
-    void ApplyPendingClassChange(CharacterDatabaseTransaction trans);
+    // Applies the pending logout class switch. Live fixups are appended to `trans`.
+    // Returns true only when the class byte actually changed; the caller saves and commits.
+    bool ApplyPendingClassChange(CharacterDatabaseTransaction trans);
     bool ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans);
     // Queues the same logout switch as .character changeclass. Does not log the player out.
     ClassChangeRequestStatus RequestClassChange(uint8 newClass);
