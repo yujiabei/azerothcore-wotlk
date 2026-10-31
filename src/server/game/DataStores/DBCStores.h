@@ -208,4 +208,8 @@ extern DBCStorage <WorldMapOverlayEntry>         sWorldMapOverlayStore;
 
 void LoadDBCStores(std::string const& dataPath);
 
+// Largest (total ranks in all three trees minus 71) among the ten classes.
+// 71 is the level-80 native budget. Computed from Talent.dbc after LoadDBCStores.
+uint32 GetMulticlassTalentBonusCap();
+
 #endif

@@ -685,6 +685,9 @@ void LoadDBCStores(std::string const& dataPath)
         exit(1);
     }
 
+    // Talent stores are loaded. Cache the multiclass cap before any player logs in.
+    GetMulticlassTalentBonusCap();
+
     LOG_INFO("server.loading", ">> Initialized {} Data Stores in {} ms", DBCFileCount, GetMSTimeDiffToNow(oldMSTime));
     LOG_INFO("server.loading", " ");
 }
@@ -725,6 +728,100 @@ uint32 GetTalentSpellCost(uint32 spellId)
         return pos->rank + 1;
 
     return 0;
+}
+
+static char const* MulticlassTalentCapClassName(uint8 classId)
+{
+    switch (classId)
+    {
+        case CLASS_WARRIOR:
+            return "Warrior";
+        case CLASS_PALADIN:
+            return "Paladin";
+        case CLASS_HUNTER:
+            return "Hunter";
+        case CLASS_ROGUE:
+            return "Rogue";
+        case CLASS_PRIEST:
+            return "Priest";
+        case CLASS_DEATH_KNIGHT:
+            return "Death Knight";
+        case CLASS_SHAMAN:
+            return "Shaman";
+        case CLASS_MAGE:
+            return "Mage";
+        case CLASS_WARLOCK:
+            return "Warlock";
+        case CLASS_DRUID:
+            return "Druid";
+        default:
+            break;
+    }
+
+    return "unknown";
+}
+
+// One point per level from 10 through 80. Not the bonus cap.
+uint32 constexpr NATIVE_TALENT_POINTS_AT_LEVEL_80 = 71;
+
+uint32 GetMulticlassTalentBonusCap()
+{
+    static uint32 cap = []()
+    {
+        uint32 ranks[MAX_CLASSES] = {};
+        for (uint32 i = 0; i < sTalentStore.GetNumRows(); ++i)
+        {
+            TalentEntry const* talent = sTalentStore.LookupEntry(i);
+            if (!talent)
+                continue;
+
+            TalentTabEntry const* tab = sTalentTabStore.LookupEntry(talent->TalentTab);
+            // Pet trees have a pet mask and no class. They are not part of a player class budget.
+            if (!tab || tab->petTalentMask || !tab->ClassMask)
+                continue;
+
+            uint32 rankCount = 0;
+            for (uint32 spellId : talent->RankID)
+                if (spellId)
+                    ++rankCount;
+
+            if (!rankCount)
+                continue;
+
+            for (uint8 classId = CLASS_WARRIOR; classId < MAX_CLASSES; ++classId)
+                if (tab->ClassMask & (1u << (classId - 1)))
+                    ranks[classId] += rankCount;
+        }
+
+        uint32 bestExtra = 0;
+        uint32 bestRanks = 0;
+        uint8 bestClass = 0;
+        for (uint8 classId = CLASS_WARRIOR; classId < MAX_CLASSES; ++classId)
+        {
+            if (ranks[classId] <= NATIVE_TALENT_POINTS_AT_LEVEL_80)
+                continue;
+
+            uint32 extra = ranks[classId] - NATIVE_TALENT_POINTS_AT_LEVEL_80;
+            if (extra <= bestExtra)
+                continue;
+
+            bestExtra = extra;
+            bestRanks = ranks[classId];
+            bestClass = classId;
+        }
+
+        if (!bestExtra)
+            LOG_ERROR("dbc", "Multiclass talent bonus cap is 0. Talent.dbc has no class talent ranks.");
+        else
+            LOG_INFO("server.loading",
+                ">> Multiclass talent bonus cap is {} from class {} ({}). {} ranks across 3 trees, minus {}.",
+                bestExtra, uint32(bestClass), MulticlassTalentCapClassName(bestClass), bestRanks,
+                NATIVE_TALENT_POINTS_AT_LEVEL_80);
+
+        return bestExtra;
+    }();
+
+    return cap;
 }
 
 WMOAreaTableEntry const* GetWMOAreaTableEntryByTripple(int32 rootid, int32 adtid, int32 groupid)

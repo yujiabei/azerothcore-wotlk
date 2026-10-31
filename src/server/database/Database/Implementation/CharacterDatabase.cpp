@@ -661,11 +661,13 @@ void CharacterDatabaseConnection::DoPrepareStatements()
         "FROM character_class_progress WHERE guid = ? AND class = ?", CONNECTION_BOTH);
     PrepareStatement(CHAR_REP_CLASS_PROGRESS,
         "INSERT INTO character_class_progress "
-        "(guid, class, level, xp, rest_bonus, active_spec, level_play_time, current_pet_id, last_daily_bonus_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "(guid, class, level, xp, rest_bonus, active_spec, level_play_time, current_pet_id, last_daily_bonus_at, "
+        "talent_bonus) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON DUPLICATE KEY UPDATE level = VALUES(level), xp = VALUES(xp), rest_bonus = VALUES(rest_bonus), "
         "active_spec = VALUES(active_spec), level_play_time = VALUES(level_play_time), "
-        "current_pet_id = VALUES(current_pet_id), last_daily_bonus_at = VALUES(last_daily_bonus_at)",
+        "current_pet_id = VALUES(current_pet_id), last_daily_bonus_at = VALUES(last_daily_bonus_at), "
+        "talent_bonus = VALUES(talent_bonus)",
         CONNECTION_BOTH);
     PrepareStatement(CHAR_DEL_CLASS_SPELL_BY_CLASS, "DELETE FROM character_class_spell WHERE guid = ? AND class = ?", CONNECTION_BOTH);
     PrepareStatement(CHAR_INS_CLASS_SPELL,
@@ -770,6 +772,10 @@ void CharacterDatabaseConnection::DoPrepareStatements()
         "ON DUPLICATE KEY UPDATE mastered_at = IF(mastered_at IS NULL OR mastered_at = 0, "
         "VALUES(mastered_at), mastered_at)",
         CONNECTION_BOTH);
+    PrepareStatement(CHAR_SEL_CLASS_TALENT_BONUS_LEVELS,
+        "SELECT class, level, talent_bonus FROM character_class_progress WHERE guid = ?", CONNECTION_BOTH);
+    PrepareStatement(CHAR_UPD_CLASS_TALENT_BONUS,
+        "UPDATE character_class_progress SET talent_bonus = ? WHERE guid = ? AND class = ?", CONNECTION_BOTH);
 }
 
 CharacterDatabaseConnection::CharacterDatabaseConnection(MySQLConnectionInfo& connInfo) : MySQLConnection(connInfo)

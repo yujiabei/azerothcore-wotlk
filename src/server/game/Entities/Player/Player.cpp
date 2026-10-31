@@ -182,6 +182,9 @@ Player::Player(WorldSession* session): Unit(), m_mover(this), _cinematicMgr(*thi
     m_usedTalentCount = 0;
     m_questRewardTalentCount = 0;
     m_extraBonusTalentCount = 0;
+    m_multiclassBonusTalentPoints = 0;
+    m_multiclassHonoredBonus = 0;
+    m_multiclassTalentOverSpent = false;
 
     m_regenTimer = 0;
     m_regenTimerCount = 0;
@@ -3127,17 +3130,22 @@ void Player::InitTalentForLevel()
 {
     uint32 talentPointsForLevel = CalculateTalentsPoints();
 
-    // if used more than have then reset
+    // A multiclass recalc can land under points already spent. Keep that build and grant
+    // nothing more. Over-budget cases that are not that clamp still reset.
     if (m_usedTalentCount > talentPointsForLevel)
     {
-        if (!GetSession()->HasPermission(rbac::RBAC_PERM_SKIP_CHECK_MORE_TALENTS_THAN_ALLOWED))
-            resetTalents(true);
-        else
+        if (m_multiclassTalentOverSpent
+            || GetSession()->HasPermission(rbac::RBAC_PERM_SKIP_CHECK_MORE_TALENTS_THAN_ALLOWED))
             SetFreeTalentPoints(0);
+        else
+            resetTalents(true);
     }
-    // else update amount of free points
     else
+    {
         SetFreeTalentPoints(talentPointsForLevel - m_usedTalentCount);
+        if (m_multiclassTalentOverSpent && !MulticlassSpentExceeds(talentPointsForLevel))
+            m_multiclassTalentOverSpent = false;
+    }
 
     if (!GetSession()->PlayerLoading())
         SendTalentsInfoData(false);                         // update at client
@@ -4477,6 +4485,8 @@ bool Player::resetTalents(bool noResetCost)
 
     // pussywizard: removed saving to db, nothing important happens and saving only spells and talents may cause data integrity problems (eg. with skills saved to db)
     SetFreeTalentPoints(talentPointsForLevel);
+    if (m_multiclassTalentOverSpent && !MulticlassSpentExceeds(talentPointsForLevel))
+        m_multiclassTalentOverSpent = false;
 
     if (!noResetCost)
     {
@@ -14489,6 +14499,8 @@ uint32 Player::CalculateTalentsPoints() const
     }
 
     talentPointsForLevel += m_extraBonusTalentCount;
+    // Other classes' levels / 3, already capped. Separate from the persisted GM extra above.
+    talentPointsForLevel += m_multiclassBonusTalentPoints;
     sScriptMgr->OnPlayerCalculateTalentsPoints(this, talentPointsForLevel);
     return uint32(talentPointsForLevel * sWorld->getRate(RATE_TALENT));
 }

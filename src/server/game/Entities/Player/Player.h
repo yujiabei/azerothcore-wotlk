@@ -3021,6 +3021,12 @@ protected:
     uint32 m_usedTalentCount;
     uint32 m_questRewardTalentCount;
     uint32 m_extraBonusTalentCount;
+    // floor(other class levels / 3) after the global cap. Added on top of the native budget.
+    uint32 m_multiclassBonusTalentPoints;
+    // Last bonus this class's spent talents may rely on. Stays put when a lower recalc would delete points.
+    uint32 m_multiclassHonoredBonus;
+    // Spent talents were kept because the new budget fell under points already spent.
+    bool m_multiclassTalentOverSpent;
 
     // Social
     PlayerSocial* m_social;
@@ -3070,6 +3076,11 @@ private:
 
     void LoadOtherClassWeaponSkills();
     void ApplyWeaponSkillFloor();
+    // Other classes' saved levels / 3, capped. Runs on login and after a class change.
+    void RefreshMulticlassBonusTalents();
+    [[nodiscard]] uint32 CountSpecTalentPoints(uint8 spec) const;
+    [[nodiscard]] bool MulticlassSpentExceeds(uint32 budget) const;
+    void ApplyMulticlassTalentBonus(uint32 otherLevels, uint32 loadedHonored);
     void LoadClassMastery();
     void GrantClassMastery();
     void MarkClassMastered(uint8 classId, uint8 level);
