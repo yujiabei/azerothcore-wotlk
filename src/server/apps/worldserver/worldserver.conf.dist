@@ -2800,6 +2800,19 @@ Multiclass.ResetArenaOnSwitch = 0
 Multiclass.MentorNpcEntry = 550000
 
 #
+#    Multiclass.MentorItemEntry
+#        Description: item_template entry of the bag item that opens the same menu.
+#                     The pending world SQL inserts 550001. It is soulbound, unique,
+#                     and not limited to a map. Right-click works in instances.
+#                     Combat is refused. Gold cost and cooldown stay on the swap.
+#                     Multiclass.RequireCity still applies to the mentor NPC.
+#                     Give one with: .additem 550001
+#                     0 disables the item script.
+#        Default:     550001
+
+Multiclass.MentorItemEntry = 550001
+
+#
 ###################################################################################################
 
 ###################################################################################################
