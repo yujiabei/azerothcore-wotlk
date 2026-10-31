@@ -1039,23 +1039,23 @@ uint32 GetDefaultMapLight(uint32 mapId)
 
 SkillRaceClassInfoEntry const* GetSkillRaceClassInfo(uint32 skill, uint8 race, uint8 class_)
 {
+    SkillRaceClassInfoEntry const* classFallback = nullptr;
     SkillRaceClassInfoBounds bounds = SkillRaceClassInfoBySkill.equal_range(skill);
     for (SkillRaceClassInfoMap::iterator itr = bounds.first; itr != bounds.second; ++itr)
     {
-        if (itr->second->RaceMask && !(itr->second->RaceMask & (1 << (race - 1))))
-        {
-            continue;
-        }
+        SkillRaceClassInfoEntry const* entry = itr->second;
+        bool raceOk = !entry->RaceMask || (entry->RaceMask & (1 << (race - 1)));
+        bool classOk = !entry->ClassMask || (entry->ClassMask & (1 << (class_ - 1)));
+        if (raceOk && classOk)
+            return entry;
 
-        if (itr->second->ClassMask && !(itr->second->ClassMask & (1 << (class_ - 1))))
-        {
-            continue;
-        }
-
-        return itr->second;
+        // Rows name the races that can be created as this class. A switched character
+        // still needs that class skill (bows on a human hunter, daggers on a tauren rogue).
+        if (!classFallback && entry->ClassMask && classOk)
+            classFallback = entry;
     }
 
-    return nullptr;
+    return classFallback;
 }
 
 EmotesTextSoundEntry const* FindTextSoundEmoteFor(uint32 emote, uint32 race, uint32 gender)
