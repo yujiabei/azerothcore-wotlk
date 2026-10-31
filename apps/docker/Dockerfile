@@ -55,7 +55,9 @@ ARG CMAKE_EXTRA_OPTIONS=""
 ARG GIT_DISCOVERY_ACROSS_FILESYSTEM=1
 
 ARG CCACHE_DIR="/ccache"
-ARG CCACHE_MAXSIZE="1000MB"
+# Disk quota for the BuildKit cache mount at /ccache. Not RAM, and not the
+# ninja job count (ACORE_BUILD_JOBS stays at its default of 2).
+ARG CCACHE_MAXSIZE="8GB"
 ARG CCACHE_SLOPPINESS="pch_defines,time_macros,include_file_mtime"
 ARG CCACHE_COMPRESS=""
 ARG CCACHE_COMPRESSLEVEL="9"
@@ -81,6 +83,10 @@ ARG CACHEBUST=1
 WORKDIR /azerothcore/build
 
 RUN --mount=type=cache,target=/ccache,sharing=locked \
+    # Persist CMake/Ninja outputs across `docker compose build`. The first build
+    # after this mount is added fills an empty cache; later builds skip
+    # unchanged translation units. Do not prune this cache.
+    --mount=type=cache,target=/azerothcore/build,sharing=locked \
     # This may seem silly (and it is), but AzerothCore wants the git repo at
     # build time. The git repo is _huge_ and it's not something that really
     # makes sense to mount into the container, but this way we can let the build
