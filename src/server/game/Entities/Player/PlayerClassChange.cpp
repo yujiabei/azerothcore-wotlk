@@ -1619,7 +1619,7 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
     if (sConfigMgr->GetOption<bool>("Multiclass.ResetArenaOnSwitch", false))
         SetAtLoginFlag(AT_LOGIN_RESET_ARENA);
 
-    RemoveAtLoginFlag(AT_LOGIN_CHANGE_CLASS, false);
+    RemoveAtLoginFlag(AtLoginFlags(AT_LOGIN_CHANGE_CLASS | AT_LOGIN_CHANGE_CLASS_ANYWHERE), false);
 
     sCharacterCache->UpdateCharacterClass(GetGUID(), newClass);
     if (uint32 guildId = GetGuildId())
@@ -1676,7 +1676,7 @@ bool Player::IsInCapitalCity() const
     return zone && (zone->flags & AREA_FLAG_CAPITAL) != 0;
 }
 
-ClassChangeRequestStatus Player::RequestClassChange(uint8 newClass)
+ClassChangeRequestStatus Player::RequestClassChange(uint8 newClass, bool requireCity)
 {
     ClassChangeRequestStatus status;
     if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", true))
@@ -1751,7 +1751,7 @@ ClassChangeRequestStatus Player::RequestClassChange(uint8 newClass)
         return status;
     }
 
-    if (sConfigMgr->GetOption<bool>("Multiclass.RequireCity", true) && !IsInCapitalCity())
+    if (requireCity && sConfigMgr->GetOption<bool>("Multiclass.RequireCity", true) && !IsInCapitalCity())
     {
         status.Result = CLASS_CHANGE_CITY;
         return status;
@@ -1770,13 +1770,16 @@ ClassChangeRequestStatus Player::RequestClassChange(uint8 newClass)
     stmt->SetData(2, now);
     CharacterDatabase.DirectExecute(stmt);
 
-    SetAtLoginFlag(AT_LOGIN_CHANGE_CLASS);
+    uint16 loginFlags = uint16(AT_LOGIN_CHANGE_CLASS);
+    if (!requireCity)
+        loginFlags |= uint16(AT_LOGIN_CHANGE_CLASS_ANYWHERE);
+    SetAtLoginFlag(AtLoginFlags(loginFlags));
     // Sync connection, and it must finish before logout stores the cleared flag.
     // An async OR can land after that save and make the next login switch again.
     // The statement is prepared on both connections. Async-only asserts in
     // MySQLConnection::Execute (statement 224) and logout never reaches the save.
     CharacterDatabasePreparedStatement* flagStmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_ADD_AT_LOGIN_FLAG);
-    flagStmt->SetData(0, uint16(AT_LOGIN_CHANGE_CLASS));
+    flagStmt->SetData(0, loginFlags);
     flagStmt->SetData(1, GetGUID().GetCounter());
     CharacterDatabase.DirectExecute(flagStmt);
     LOG_DEBUG("multiclass", "Queued class change for {} ({}) {} -> {}",
@@ -1852,14 +1855,14 @@ bool Player::ApplyPendingClassChange(CharacterDatabaseTransaction trans, bool ci
 
     auto clearPending = [this, trans]()
     {
-        RemoveAtLoginFlag(AT_LOGIN_CHANGE_CLASS, false);
+        RemoveAtLoginFlag(AtLoginFlags(AT_LOGIN_CHANGE_CLASS | AT_LOGIN_CHANGE_CLASS_ANYWHERE), false);
         CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CLASS_SWITCH_CLEAR);
         stmt->SetData(0, GetGUID().GetCounter());
         trans->Append(stmt);
 
         CharacterDatabasePreparedStatement* flagStmt =
             CharacterDatabase.GetPreparedStatement(CHAR_UPD_REM_AT_LOGIN_FLAG);
-        flagStmt->SetData(0, uint16(AT_LOGIN_CHANGE_CLASS));
+        flagStmt->SetData(0, uint16(AT_LOGIN_CHANGE_CLASS | AT_LOGIN_CHANGE_CLASS_ANYWHERE));
         flagStmt->SetData(1, GetGUID().GetCounter());
         trans->Append(flagStmt);
     };
@@ -1875,8 +1878,10 @@ bool Player::ApplyPendingClassChange(CharacterDatabaseTransaction trans, bool ci
     // The command already checked the city before logout. This covers an offline queue
     // and a crash before that logout. Cancelling here does not charge the switch cost.
     // A request whose flag update asserted already passed the check. Apply that one anyway.
-    if (!cityAlreadyChecked && isBeingLoaded() && sConfigMgr->GetOption<bool>("Multiclass.RequireCity", true)
-        && !IsInCapitalCity())
+    // The bag item sets AT_LOGIN_CHANGE_CLASS_ANYWHERE, so that request still applies here.
+    bool anywhere = HasAtLoginFlag(AT_LOGIN_CHANGE_CLASS_ANYWHERE);
+    if (!cityAlreadyChecked && !anywhere && isBeingLoaded()
+        && sConfigMgr->GetOption<bool>("Multiclass.RequireCity", true) && !IsInCapitalCity())
     {
         clearPending();
         MailCityChangeRefusal(this);
