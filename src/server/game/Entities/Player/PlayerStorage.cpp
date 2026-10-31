@@ -5738,15 +5738,17 @@ bool Player::LoadFromDB(ObjectGuid playerGuid, CharacterDatabaseQueryHolder cons
     // Before a login switch, so the outgoing snapshot keeps today's grant.
     LoadClassDailyBonusTime();
 
-    // Login fallback for a class switch that did not finish during logout.
-    // Runs after spells and inventory are in memory, and before the initial spell packet.
-    // A cancelled flag must not save: that write can replace a logout swap that already committed.
+    // Login fallback when logout did not commit. A missing at_login bit still applies when
+    // the switch row has a target. A cancelled switch only clears that row, so it must not
+    // rewrite the whole character over a swap that already committed.
+    bool cityAlreadyChecked = NotePendingClassChangeFromDb();
     if (HasAtLoginFlag(AT_LOGIN_CHANGE_CLASS))
     {
         CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
-        if (ApplyPendingClassChange(trans))
+        if (ApplyPendingClassChange(trans, cityAlreadyChecked))
             SaveToDB(trans, false, false);
-        CharacterDatabase.DirectCommitTransaction(trans);
+        if (!CommitClassChangeTransaction(trans))
+            return false;
     }
     // After a switch the new class row is committed, so the cache includes its level.
     RefreshHighestClassLevel();
