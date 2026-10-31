@@ -1617,8 +1617,10 @@ ClassChangeRequestStatus Player::RequestClassChange(uint8 newClass)
     CharacterDatabase.DirectExecute(stmt);
 
     SetAtLoginFlag(AT_LOGIN_CHANGE_CLASS);
-    // Synchronous. An async OR can land after logout has already stored the cleared flag
-    // and make the next login run the switch a second time.
+    // Sync connection, and it must finish before logout stores the cleared flag.
+    // An async OR can land after that save and make the next login switch again.
+    // The statement is prepared on both connections. Async-only asserts in
+    // MySQLConnection::Execute (statement 224) and logout never reaches the save.
     CharacterDatabasePreparedStatement* flagStmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_ADD_AT_LOGIN_FLAG);
     flagStmt->SetData(0, uint16(AT_LOGIN_CHANGE_CLASS));
     flagStmt->SetData(1, GetGUID().GetCounter());
@@ -1644,7 +1646,49 @@ void MailCityChangeRefusal(Player* player)
     CharacterDatabase.CommitTransaction(mailTrans);
 }
 
-bool Player::ApplyPendingClassChange(CharacterDatabaseTransaction trans)
+bool Player::NotePendingClassChangeFromDb()
+{
+    if (HasAtLoginFlag(AT_LOGIN_CHANGE_CLASS))
+        return false;
+
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_SWITCH);
+    stmt->SetData(0, GetGUID().GetCounter());
+    PreparedQueryResult result = CharacterDatabase.Query(stmt);
+    if (!result)
+        return false;
+
+    uint8 pending = result->Fetch()[0].Get<uint8>();
+    if (!pending)
+        return false;
+
+    SetAtLoginFlag(AT_LOGIN_CHANGE_CLASS);
+    LOG_INFO("entities.player", "Player {} ({}) still has a class change to {} pending",
+        GetName(), GetGUID().ToString(), uint32(pending));
+    return true;
+}
+
+bool Player::CommitClassChangeTransaction(CharacterDatabaseTransaction trans)
+{
+    if (!trans || !trans->GetSize())
+        return true;
+
+    TransactionCallback callback = CharacterDatabase.AsyncCommitTransaction(trans);
+    if (!callback.m_future.valid())
+    {
+        LOG_ERROR("entities.player", "Player {} ({}) could not queue a class change commit",
+            GetName(), GetGUID().ToString());
+        return false;
+    }
+
+    if (callback.m_future.get())
+        return true;
+
+    LOG_ERROR("entities.player", "Player {} ({}) failed to commit a class change",
+        GetName(), GetGUID().ToString());
+    return false;
+}
+
+bool Player::ApplyPendingClassChange(CharacterDatabaseTransaction trans, bool cityAlreadyChecked)
 {
     if (!HasAtLoginFlag(AT_LOGIN_CHANGE_CLASS) || !trans)
         return false;
@@ -1658,6 +1702,12 @@ bool Player::ApplyPendingClassChange(CharacterDatabaseTransaction trans)
         CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CLASS_SWITCH_CLEAR);
         stmt->SetData(0, GetGUID().GetCounter());
         trans->Append(stmt);
+
+        CharacterDatabasePreparedStatement* flagStmt =
+            CharacterDatabase.GetPreparedStatement(CHAR_UPD_REM_AT_LOGIN_FLAG);
+        flagStmt->SetData(0, uint16(AT_LOGIN_CHANGE_CLASS));
+        flagStmt->SetData(1, GetGUID().GetCounter());
+        trans->Append(flagStmt);
     };
 
     if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", true))
@@ -1670,7 +1720,9 @@ bool Player::ApplyPendingClassChange(CharacterDatabaseTransaction trans)
 
     // The command already checked the city before logout. This covers an offline queue
     // and a crash before that logout. Cancelling here does not charge the switch cost.
-    if (isBeingLoaded() && sConfigMgr->GetOption<bool>("Multiclass.RequireCity", true) && !IsInCapitalCity())
+    // A request whose flag update asserted already passed the check. Apply that one anyway.
+    if (!cityAlreadyChecked && isBeingLoaded() && sConfigMgr->GetOption<bool>("Multiclass.RequireCity", true)
+        && !IsInCapitalCity())
     {
         clearPending();
         MailCityChangeRefusal(this);
