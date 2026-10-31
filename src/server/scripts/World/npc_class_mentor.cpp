@@ -158,20 +158,112 @@ std::string ClassLabel(Player const* player, uint8 classId)
     return Acore::StringFormat("{}", uint32(classId));
 }
 
-std::string SpellLabel(Player const* player, uint32 spellId)
+char const* LocaleField(std::array<char const*, 16> const& field, LocaleConstant locale)
 {
-    LocaleConstant locale = player->GetSession()->GetSessionDbcLocale();
-    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId))
+    if (locale < TOTAL_LOCALES && field[locale] && field[locale][0])
+        return field[locale];
+    return nullptr;
+}
+
+// zhCN comes from Spell.dbc / spell_dbc. An empty slot falls back to enUS.
+std::string SpellNameText(SpellInfo const* info)
+{
+    if (!info)
+        return {};
+
+    if (char const* name = LocaleField(info->SpellName, LOCALE_zhCN))
+        return name;
+    if (char const* name = LocaleField(info->SpellName, LOCALE_enUS))
+        return name;
+    return {};
+}
+
+struct SpellOrder
+{
+    std::string Name;
+    uint8 Rank = 1;
+    uint32 SpellId = 0;
+};
+
+SpellOrder OrderOf(uint32 spellId)
+{
+    SpellOrder order;
+    order.SpellId = spellId;
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+    if (!info)
+        return order;
+
+    order.Name = SpellNameText(info);
+    order.Rank = info->GetRank();
+    if (order.Name.empty())
+        order.Name = Acore::StringFormat("{}", spellId);
+    return order;
+}
+
+bool SpellOrderLess(SpellOrder const& left, SpellOrder const& right)
+{
+    if (left.Name != right.Name)
+        return left.Name < right.Name;
+    if (left.Rank != right.Rank)
+        return left.Rank < right.Rank;
+    return left.SpellId < right.SpellId;
+}
+
+void SortSpellIds(std::vector<uint32>& spellIds)
+{
+    std::vector<SpellOrder> orders;
+    orders.reserve(spellIds.size());
+    for (uint32 spellId : spellIds)
+        orders.push_back(OrderOf(spellId));
+
+    std::sort(orders.begin(), orders.end(), SpellOrderLess);
+    for (size_t index = 0; index < spellIds.size(); ++index)
+        spellIds[index] = orders[index].SpellId;
+}
+
+void FitUtf8(std::string& text, size_t maxBytes)
+{
+    if (text.size() <= maxBytes)
+        return;
+
+    size_t end = 0;
+    while (end < text.size())
     {
-        char const* name = nullptr;
-        if (locale < TOTAL_LOCALES)
-            name = info->SpellName[locale];
-        if ((!name || !name[0]) && info->SpellName[LOCALE_enUS] && info->SpellName[LOCALE_enUS][0])
-            name = info->SpellName[LOCALE_enUS];
-        if (name && name[0])
-            return name;
+        uint8 lead = uint8(text[end]);
+        size_t width = 1;
+        if (lead >= 0x80)
+        {
+            if ((lead & 0xE0) == 0xC0)
+                width = 2;
+            else if ((lead & 0xF0) == 0xE0)
+                width = 3;
+            else if ((lead & 0xF8) == 0xF0)
+                width = 4;
+            else
+                break;
+        }
+
+        if (end + width > maxBytes || end + width > text.size())
+            break;
+        end += width;
     }
-    return Acore::StringFormat("{}", spellId);
+    text.resize(end);
+}
+
+// Session locale is ignored. The retain list is always zhCN, with enUS as fallback.
+std::string SpellLabel(Player const* /*player*/, uint32 spellId)
+{
+    if (!sSpellMgr->GetSpellInfo(spellId))
+        return Acore::StringFormat("{}", spellId);
+
+    SpellOrder order = OrderOf(spellId);
+    // Rank is SpellInfo::GetRank() (spell_ranks, or the talent chain). Unranked spells are 1.
+    std::string suffix = Acore::StringFormat("（等级 {}）", uint32(order.Rank));
+    // Leave room for the "保留：" / "Remove: " prefix inside Short()'s 90-byte cap.
+    constexpr size_t MaxLabelBytes = 78;
+    if (suffix.size() < MaxLabelBytes && order.Name.size() + suffix.size() > MaxLabelBytes)
+        FitUtf8(order.Name, MaxLabelBytes - suffix.size());
+    return order.Name + suffix;
 }
 
 uint8 SlotsForLevel(uint8 level)
@@ -543,13 +635,20 @@ void ShowClassRetain(Player* player, ObjectGuid const& source, uint8 classId)
     AddOption(player, Tf(player, LANG_MULTICLASS_MENU_SPELLS, spells, slots), sender, ACT_SPELLS);
     AddOption(player, Tf(player, LANG_MULTICLASS_MENU_TALENTS, talents, slots), sender, ACT_TALENTS);
 
+    std::vector<RetainPick> picks;
     for (RetainPick const& row : view.Retained)
     {
         if (row.SourceClass != classId || (row.Kind != RETAIN_KIND_SPELL && row.Kind != RETAIN_KIND_TALENT))
             continue;
+        picks.push_back(row);
+    }
+    std::sort(picks.begin(), picks.end(), [](RetainPick const& left, RetainPick const& right)
+    {
+        return SpellOrderLess(OrderOf(left.SpellId), OrderOf(right.SpellId));
+    });
+    for (RetainPick const& row : picks)
         AddOption(player, Tf(player, LANG_MULTICLASS_PICK_REMOVE, SpellLabel(player, row.SpellId)),
             sender, row.SpellId);
-    }
 
     AddOption(player, T(player, LANG_MULTICLASS_MENU_BACK), sender, ACT_BACK);
     SendGossipMenuFor(player, MENTOR_TEXT, source);
@@ -578,7 +677,7 @@ std::vector<uint32> Candidates(MentorView const& view, uint8 classId, bool talen
                 ids.push_back(spellId);
     }
 
-    std::sort(ids.begin(), ids.end());
+    SortSpellIds(ids);
     return ids;
 }
 
@@ -640,7 +739,7 @@ std::vector<SynergyChoice> SynergyChoices(MentorView const& view)
     }
     std::sort(choices.begin(), choices.end(), [](SynergyChoice const& left, SynergyChoice const& right)
     {
-        return left.SpellId < right.SpellId;
+        return SpellOrderLess(OrderOf(left.SpellId), OrderOf(right.SpellId));
     });
 
     std::vector<uint32> adds;
@@ -664,7 +763,10 @@ std::vector<SynergyChoice> SynergyChoices(MentorView const& view)
         for (uint32 spellId : view.Talents[classId])
             consider(spellId);
     }
-    std::sort(adds.begin(), adds.end());
+    std::sort(adds.begin(), adds.end(), [](uint32 left, uint32 right)
+    {
+        return SpellOrderLess(OrderOf(left), OrderOf(right));
+    });
     for (uint32 spellId : adds)
         choices.push_back({ spellId, false });
     return choices;
