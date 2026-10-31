@@ -5755,6 +5755,8 @@ bool Player::LoadFromDB(ObjectGuid playerGuid, CharacterDatabaseQueryHolder cons
     // Classes already at the cap, including rows stored before mastery existed.
     RetroactiveClassMastery();
     LoadClassMastery();
+    // A talent that still spends its point teaches rank 1 again when character_spell lost it.
+    RestoreTalentGrantedSpells();
     ApplyRetainedSpells();
     return true;
 }

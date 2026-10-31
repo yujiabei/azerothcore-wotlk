@@ -1758,6 +1758,8 @@ public:
     // Returns true only when the class byte actually changed; the caller saves and commits.
     bool ApplyPendingClassChange(CharacterDatabaseTransaction trans);
     bool ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans);
+    // Spellbook ranks a stored talent teaches, including rank 1. Higher ranks already known stay.
+    void RestoreTalentGrantedSpells();
     // Queues the same logout switch as .character changeclass. Does not log the player out.
     ClassChangeRequestStatus RequestClassChange(uint8 newClass);
     [[nodiscard]] uint8 GetFreshClassLevel() const;

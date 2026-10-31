@@ -205,14 +205,134 @@ bool IsClassBoundSpell(uint32 spellId, uint8 playerClass)
 
 void RememberSpell(ClassArchive& archive, uint32 spellId, uint8 specMask)
 {
-    for (SpellSnap const& row : archive.Spells)
+    uint8 mask = specMask ? specMask : uint8(SPEC_MASK_ALL);
+    // The spell row may already be stored from m_spells. A talent can cover a spec that row missed.
+    for (SpellSnap& row : archive.Spells)
         if (row.Id == spellId)
+        {
+            row.SpecMask |= mask;
             return;
+        }
 
     SpellSnap row;
     row.Id = spellId;
-    row.SpecMask = specMask ? specMask : uint8(SPEC_MASK_ALL);
+    row.SpecMask = mask;
     archive.Spells.push_back(row);
+}
+
+// LearnTalent writes these into the spellbook. addTalent does not. Pyroblast (11366) and
+// Blast Wave (11113) are the talent spell itself (Talent.dbc addToSpellBook), so restoring
+// the talent spends the point and never teaches the rank the trainer's next rank requires.
+bool TalentBelongsToClass(uint32 talentSpellId, uint32 classMask)
+{
+    TalentSpellPos const* pos = GetTalentSpellPos(talentSpellId);
+    if (!pos || !classMask)
+        return false;
+
+    TalentEntry const* talentInfo = sTalentStore.LookupEntry(pos->talent_id);
+    if (!talentInfo)
+        return false;
+
+    TalentTabEntry const* tab = sTalentTabStore.LookupEntry(talentInfo->TalentTab);
+    return tab && (tab->ClassMask & classMask) != 0;
+}
+
+void CollectTalentGrantedSpells(uint32 talentSpellId, std::vector<uint32>& out)
+{
+    SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(talentSpellId);
+    TalentSpellPos const* pos = GetTalentSpellPos(talentSpellId);
+    if (!spellInfo || !pos)
+        return;
+
+    TalentEntry const* talentInfo = sTalentStore.LookupEntry(pos->talent_id);
+    if (!talentInfo)
+        return;
+
+    if (talentInfo->addToSpellBook && !spellInfo->HasAttribute(SPELL_ATTR0_PASSIVE)
+        && !spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL))
+        out.push_back(talentSpellId);
+
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        if (spellInfo->Effects[i].Effect == SPELL_EFFECT_LEARN_SPELL
+            && sSpellMgr->IsAdditionalTalentSpell(spellInfo->Effects[i].TriggerSpell))
+            out.push_back(spellInfo->Effects[i].TriggerSpell);
+}
+
+bool SpellCoversSpec(PlayerSpell const* spell, uint8 specMask)
+{
+    return spell && spell->State != PLAYERSPELL_REMOVED && spell->State != PLAYERSPELL_TEMPORARY
+        && (spell->specMask & specMask) == specMask;
+}
+
+// Rank 1 may be absent, removed, or stored with specMask 0 (HasSpell then fails). A removed
+// row is still in character_spell, so the replacement must be CHANGED. A brand-new row learned
+// while loading is UNCHANGED, which _SaveSpells will not insert.
+bool EnsureSpellSpec(Player* player, uint32 spellId, uint8 specMask)
+{
+    if (!spellId || !specMask || !sSpellMgr->GetSpellInfo(spellId))
+        return false;
+
+    PlayerSpellMap& spells = player->GetSpellMap();
+    auto itr = spells.find(spellId);
+    if (itr != spells.end() && SpellCoversSpec(itr->second, specMask))
+        return false;
+
+    bool revived = itr != spells.end() && itr->second && itr->second->State == PLAYERSPELL_REMOVED;
+    bool persisted = itr != spells.end() && itr->second && !revived
+        && itr->second->State != PLAYERSPELL_NEW && itr->second->State != PLAYERSPELL_TEMPORARY;
+
+    if (itr != spells.end() && itr->second
+        && (revived || itr->second->State == PLAYERSPELL_TEMPORARY))
+    {
+        delete itr->second;
+        spells.erase(itr);
+    }
+
+    player->addSpell(spellId, specMask, true);
+
+    itr = spells.find(spellId);
+    if (itr == spells.end() || !itr->second)
+        return false;
+
+    if (revived)
+        itr->second->State = PLAYERSPELL_CHANGED;
+    else if (!persisted && itr->second->State == PLAYERSPELL_UNCHANGED)
+        itr->second->State = PLAYERSPELL_NEW;
+
+    return true;
+}
+
+void RememberTalentGrantedSpells(Player const* player, ClassArchive& archive)
+{
+    uint32 classMask = player->getClassMask();
+    for (auto const& itr : player->GetTalentMap())
+    {
+        if (!itr.second || itr.second->State == PLAYERSPELL_REMOVED || !itr.second->specMask)
+            continue;
+        if (!TalentBelongsToClass(itr.first, classMask))
+            continue;
+
+        std::vector<uint32> granted;
+        CollectTalentGrantedSpells(itr.first, granted);
+        for (uint32 spellId : granted)
+            RememberSpell(archive, spellId, itr.second->specMask);
+    }
+}
+
+void KeepKnownHigherRanks(Player* player, uint32 firstSpellId, uint8 specMask, uint32& restored)
+{
+    uint32 next = sSpellMgr->GetNextSpellInChain(firstSpellId);
+    while (next)
+    {
+        auto itr = player->GetSpellMap().find(next);
+        if (itr != player->GetSpellMap().end() && itr->second
+            && itr->second->State != PLAYERSPELL_REMOVED
+            && itr->second->State != PLAYERSPELL_TEMPORARY)
+            if (EnsureSpellSpec(player, next, specMask))
+                ++restored;
+
+        next = sSpellMgr->GetNextSpellInChain(next);
+    }
 }
 
 void AppendClassDelete(CharacterDatabaseTransaction trans, CharacterDatabaseStatements id, uint32 guid,
@@ -834,6 +954,34 @@ bool IsRandomBotGuid(ObjectGuid::LowType guid)
 }
 }
 
+void Player::RestoreTalentGrantedSpells()
+{
+    uint32 classMask = getClassMask();
+    uint32 restored = 0;
+
+    for (auto const& itr : m_talents)
+    {
+        if (!itr.second || itr.second->State == PLAYERSPELL_REMOVED || !itr.second->specMask)
+            continue;
+        if (!TalentBelongsToClass(itr.first, classMask))
+            continue;
+
+        uint8 specMask = itr.second->specMask;
+        std::vector<uint32> granted;
+        CollectTalentGrantedSpells(itr.first, granted);
+        for (uint32 spellId : granted)
+        {
+            if (EnsureSpellSpec(this, spellId, specMask))
+                ++restored;
+            KeepKnownHigherRanks(this, spellId, specMask, restored);
+        }
+    }
+
+    if (restored)
+        LOG_DEBUG("multiclass", "Player {} ({}) restored {} talent-granted spell ranks",
+            GetName(), GetGUID().ToString(), restored);
+}
+
 // Fresh classes learn playercreateinfo skills, then level-scaled weapon/armor/class skills are raised to
 // level * 5 so learnSkillRewardedSpells grants ranks for the current level. LearnCustomSpells runs when
 // CONFIG_START_CUSTOM_SPELLS is set. learnQuestRewardedSpells is intentionally not called: it would
@@ -930,6 +1078,9 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
         row.SpecMask = itr.second->specMask;
         outgoing.Talents.push_back(row);
     }
+
+    // Rank 1 is not always in m_spells. The talent row is the source of that spell.
+    RememberTalentGrantedSpells(this, outgoing);
 
     for (uint8 spec = 0; spec < MAX_TALENT_SPECS; ++spec)
     {
@@ -1321,6 +1472,9 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
             addTalent(row.Id, row.SpecMask, 0);
 
     InitTalentForLevel();
+    // addTalent does not repeat LearnTalent's spellbook grant. Do this after the level
+    // check so a talent reset does not leave the rank-1 spell behind.
+    RestoreTalentGrantedSpells();
 
     for (GlyphSnap const& row : incoming.Glyphs)
     {
