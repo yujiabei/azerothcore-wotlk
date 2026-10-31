@@ -1756,8 +1756,18 @@ public:
     void resetSpells();
     // Applies the pending logout class switch. Live fixups are appended to `trans`.
     // Returns true only when the class byte actually changed; the caller saves and commits.
-    bool ApplyPendingClassChange(CharacterDatabaseTransaction trans);
+    // cityAlreadyChecked skips the capital-city cancel. A stored request already passed it
+    // when the at_login update asserted before the bit was written.
+    bool ApplyPendingClassChange(CharacterDatabaseTransaction trans, bool cityAlreadyChecked = false);
+    // Sets AT_LOGIN_CHANGE_CLASS from character_class_switch when the bit is missing.
+    // Returns true when the bit was missing and a target is stored.
+    bool NotePendingClassChangeFromDb();
+    // Waits until `trans` commits on an async connection. Character saves are not prepared
+    // on the sync connection, so DirectCommit asserts and rolls the swap back.
+    bool CommitClassChangeTransaction(CharacterDatabaseTransaction trans);
     bool ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans);
+    // Spellbook ranks a stored talent teaches, including rank 1. Higher ranks already known stay.
+    void RestoreTalentGrantedSpells();
     // Queues the same logout switch as .character changeclass. Does not log the player out.
     ClassChangeRequestStatus RequestClassChange(uint8 newClass);
     [[nodiscard]] uint8 GetFreshClassLevel() const;
