@@ -502,7 +502,8 @@ bool Player::Create(ObjectGuid::LowType guidlow, CharacterCreateInfo* createInfo
     m_name = createInfo->Name;
 
     PlayerInfo const* info = sObjectMgr->GetPlayerInfo(createInfo->Race, createInfo->Class);
-    if (!info)
+    // Synthesized rows let a class switch log in. Creation still requires a playercreateinfo row.
+    if (!info || !info->allowCharacterCreate)
     {
         LOG_ERROR("entities.player", "Player::Create: Possible hacking-attempt: Account {} tried creating a character named '{}' with an invalid race/class pair ({}/{}) - refusing to do so.",
                        GetSession()->GetAccountId(), m_name, createInfo->Race, createInfo->Class);

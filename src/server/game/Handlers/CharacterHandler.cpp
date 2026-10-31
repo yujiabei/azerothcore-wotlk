@@ -2027,7 +2027,8 @@ void WorldSession::HandleCharFactionOrRaceChangeCallback(std::shared_ptr<Charact
     uint8 playerClass = playerData->Class;
     uint8 level = playerData->Level;
 
-    if (!sObjectMgr->GetPlayerInfo(factionChangeInfo->Race, playerClass))
+    PlayerInfo const* raceClassInfo = sObjectMgr->GetPlayerInfo(factionChangeInfo->Race, playerClass);
+    if (!raceClassInfo || !raceClassInfo->allowCharacterCreate)
     {
         SendCharFactionChange(CHAR_CREATE_ERROR, factionChangeInfo.get());
         return;

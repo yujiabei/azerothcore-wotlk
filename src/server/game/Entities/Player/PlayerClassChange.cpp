@@ -1018,6 +1018,7 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
         return false;
     }
 
+    // LoadPlayerInfo synthesizes create data for race/class pairs that cannot be created.
     if (!sObjectMgr->GetPlayerInfo(getRace(true), newClass) || !sChrClassesStore.LookupEntry(newClass))
     {
         LOG_ERROR("entities.player", "Player {} ({}) has no playercreateinfo for race {} class {}",
@@ -1708,6 +1709,7 @@ ClassChangeRequestStatus Player::RequestClassChange(uint8 newClass, bool require
         return status;
     }
 
+    // Vanilla creation rows are not required. Any playable race can switch to any class.
     if (!sObjectMgr->GetPlayerInfo(getRace(true), newClass))
     {
         status.Result = CLASS_CHANGE_RACE;

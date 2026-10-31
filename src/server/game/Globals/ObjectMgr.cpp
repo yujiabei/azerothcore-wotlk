@@ -1837,6 +1837,16 @@ uint32 ObjectMgr::GetModelForTotem(SummonSlot totemSlot, Races race) const
     if (itr != _playerTotemModel.end())
         return itr->second;
 
+    // Races that cannot be created as shaman reuse that faction's shaman totem.
+    ChrRacesEntry const* raceEntry = sChrRacesStore.LookupEntry(race);
+    Races fallback = (raceEntry && raceEntry->TeamID == 7) ? RACE_DRAENEI : RACE_ORC;
+    if (fallback != race)
+    {
+        itr = _playerTotemModel.find(std::make_pair(totemSlot, fallback));
+        if (itr != _playerTotemModel.end())
+            return itr->second;
+    }
+
     LOG_ERROR("misc", "TotemSlot {} with RaceID ({}) have no totem model data defined, set to default model.", totemSlot, race);
     return 0;
 }
@@ -4342,6 +4352,125 @@ void ObjectMgr::PlayerCreateInfoAddItemHelper(uint32 race_, uint32 class_, uint3
     }
 }
 
+void ObjectMgr::FillMissingClassSwitchCreateInfo()
+{
+    if (_playerInfo.size() != sRaceMgr->GetMaxRaces())
+        return;
+
+    uint32 count = 0;
+    for (uint32 race = RACE_HUMAN; race < sRaceMgr->GetMaxRaces(); ++race)
+    {
+        ChrRacesEntry const* rEntry = sChrRacesStore.LookupEntry(race);
+        if (!rEntry || rEntry->HasFlag(CHRRACES_FLAGS_NOT_PLAYABLE))
+            continue;
+
+        PlayerInfo const* home = nullptr;
+        PlayerInfo const* anyHome = nullptr;
+        for (uint32 class_ = CLASS_WARRIOR; class_ < MAX_CLASSES; ++class_)
+        {
+            PlayerInfo const* existing = _playerInfo[race][class_];
+            if (!existing)
+                continue;
+            if (!anyHome)
+                anyHome = existing;
+            // Death knight rows start in Ebon Hold. Other classes should use the race start.
+            if (class_ == CLASS_DEATH_KNIGHT)
+                continue;
+
+            home = existing;
+            break;
+        }
+
+        if (!home)
+            home = anyHome;
+
+        if (!home)
+            continue;
+
+        for (uint32 class_ = CLASS_WARRIOR; class_ < MAX_CLASSES; ++class_)
+        {
+            if (!sChrClassesStore.LookupEntry(class_))
+                continue;
+            if (_playerInfo[race][class_])
+                continue;
+
+            PlayerInfo* info = new PlayerInfo();
+            info->mapId = home->mapId;
+            info->areaId = home->areaId;
+            info->positionX = home->positionX;
+            info->positionY = home->positionY;
+            info->positionZ = home->positionZ;
+            info->orientation = home->orientation;
+            info->displayId_m = rEntry->model_m;
+            info->displayId_f = rEntry->model_f;
+            _playerInfo[race][class_] = info;
+            ++count;
+        }
+    }
+
+    if (count)
+        LOG_INFO("server.loading", ">> Synthesized {} race/class create rows for class switch", count);
+}
+
+void ObjectMgr::GrantMissingClassWeaponSkills()
+{
+    if (_playerInfo.size() != sRaceMgr->GetMaxRaces())
+        return;
+
+    uint32 added = 0;
+    for (uint32 race = RACE_HUMAN; race < sRaceMgr->GetMaxRaces(); ++race)
+    {
+        if (PlayerInfo* hunter = _playerInfo[race][CLASS_HUNTER])
+        {
+            bool hasRanged = false;
+            for (PlayerCreateInfoSkill const& skill : hunter->skills)
+            {
+                bool ranged = skill.SkillId == SKILL_BOWS || skill.SkillId == SKILL_GUNS;
+                ranged = ranged || skill.SkillId == SKILL_CROSSBOWS;
+                if (!ranged)
+                    continue;
+
+                hasRanged = true;
+                break;
+            }
+
+            if (!hasRanged)
+            {
+                PlayerCreateInfoSkill skill;
+                skill.SkillId = SKILL_BOWS;
+                skill.Rank = 0;
+                hunter->skills.push_back(skill);
+                ++added;
+            }
+        }
+
+        if (PlayerInfo* rogue = _playerInfo[race][CLASS_ROGUE])
+        {
+            bool hasDagger = false;
+            for (PlayerCreateInfoSkill const& skill : rogue->skills)
+            {
+                if (skill.SkillId != SKILL_DAGGERS)
+                    continue;
+
+                hasDagger = true;
+                break;
+            }
+
+            if (!hasDagger)
+            {
+                PlayerCreateInfoSkill skill;
+                skill.SkillId = SKILL_DAGGERS;
+                skill.Rank = 0;
+                rogue->skills.push_back(skill);
+                ++added;
+            }
+        }
+    }
+
+    if (added)
+        LOG_INFO("server.loading", ">> Added {} class-switch weapon skills missing for that race", added);
+}
+
 void ObjectMgr::LoadPlayerInfo()
 {
     // Load playercreate
@@ -4428,6 +4557,7 @@ void ObjectMgr::LoadPlayerInfo()
                 info->orientation = orientation;
                 info->displayId_m = rEntry->model_m;
                 info->displayId_f = rEntry->model_f;
+                info->allowCharacterCreate = true;
                 _playerInfo[current_race][current_class] = info;
 
                 ++count;
@@ -4437,6 +4567,10 @@ void ObjectMgr::LoadPlayerInfo()
             LOG_INFO("server.loading", " ");
         }
     }
+
+    // Class switch can target any playable class. Rows that are not in playercreateinfo
+    // are filled here, before skills and level stats attach, and stay unusable at creation.
+    FillMissingClassSwitchCreateInfo();
 
     // Load playercreate items
     LOG_INFO("server.loading", "Loading Player Create Items Data...");
@@ -4583,6 +4717,10 @@ void ObjectMgr::LoadPlayerInfo()
             LOG_INFO("server.loading", " ");
         }
     }
+
+    // Hunter bows/guns/crossbows and rogue daggers are stored only for the races that can
+    // be created as that class. A switched character still needs one of those skills.
+    GrantMissingClassWeaponSkills();
 
     // Load playercreate spells
     LOG_INFO("server.loading", "Loading Player Create Spell Data...");

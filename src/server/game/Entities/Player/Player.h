@@ -334,6 +334,9 @@ struct PlayerInfo
     float orientation{0.0f};
     uint16 displayId_m{0};
     uint16 displayId_f{0};
+    // True only for a playercreateinfo row. Class switch fills the other race/class
+    // pairs so a character can log in, but the character screen still rejects them.
+    bool allowCharacterCreate{false};
     PlayerCreateInfoItems item;
     PlayerCreateInfoSpells customSpells;
     PlayerCreateInfoSpells  castSpells;
