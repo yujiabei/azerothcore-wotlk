@@ -2507,6 +2507,17 @@ Rate.Reputation.Gain.AV = 1
 Multiclass.Enable = 1
 
 #
+#    Multiclass talent bonus
+#        Description: While Multiclass.Enable is on, the class being played gains
+#                     floor(sum of the other classes' saved levels / 3) talent points.
+#                     A class that was never levelled counts as 0. The bonus is capped
+#                     by the largest (total ranks in all three talent trees minus 71)
+#                     among the ten classes. 71 is the level-80 native budget. The cap
+#                     is read from Talent.dbc at startup and is not a config value.
+#                     Login and class change recalculate it. If that budget falls under
+#                     points already spent, those talents stay and free points become 0.
+
+#
 #    Multiclass.SwitchCost
 #        Description: Copper charged when the swap succeeds. 0 disables the fee.
 #                     10000 copper is 1 gold.
