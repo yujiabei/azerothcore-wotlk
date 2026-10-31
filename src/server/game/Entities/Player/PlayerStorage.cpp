@@ -5569,6 +5569,10 @@ bool Player::LoadFromDB(ObjectGuid playerGuid, CharacterDatabaseQueryHolder cons
     // Extra Bonus Talent Points
     m_extraBonusTalentCount = fields[73].Get<uint8>();
 
+    // After talents are loaded, including when a class change is still pending.
+    // ChangeClass refreshes again once the incoming build is in memory.
+    RefreshMulticlassBonusTalents();
+
     // after spell, bonus talents, and quest load
     InitTalentForLevel();
 

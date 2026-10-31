@@ -599,7 +599,10 @@ enum AtLoginFlags
     AT_LOGIN_RESET_ARENA       = 0x200,
     AT_LOGIN_CHECK_ACHIEVS     = 0x400,
     AT_LOGIN_RESURRECT         = 0x800,
-    AT_LOGIN_CHANGE_CLASS      = 0x1000
+    AT_LOGIN_CHANGE_CLASS      = 0x1000,
+    // Set with AT_LOGIN_CHANGE_CLASS when the request skipped the capital-city check.
+    // Login still applies that swap outside a city. The mentor NPC does not set this.
+    AT_LOGIN_CHANGE_CLASS_ANYWHERE = 0x2000
 };
 
 enum ClassChangeRequestResult : uint8
@@ -1769,7 +1772,9 @@ public:
     // Spellbook ranks a stored talent teaches, including rank 1. Higher ranks already known stay.
     void RestoreTalentGrantedSpells();
     // Queues the same logout switch as .character changeclass. Does not log the player out.
-    ClassChangeRequestStatus RequestClassChange(uint8 newClass);
+    // requireCity false skips Multiclass.RequireCity and stores AT_LOGIN_CHANGE_CLASS_ANYWHERE
+    // so a later login still applies the swap outside a capital. The bag item uses that.
+    ClassChangeRequestStatus RequestClassChange(uint8 newClass, bool requireCity = true);
     [[nodiscard]] uint8 GetFreshClassLevel() const;
     [[nodiscard]] bool IsInCapitalCity() const;
     // Temporary cross-class spells. They are never written to character_spell.
@@ -3021,6 +3026,12 @@ protected:
     uint32 m_usedTalentCount;
     uint32 m_questRewardTalentCount;
     uint32 m_extraBonusTalentCount;
+    // floor(other class levels / 3) after the global cap. Added on top of the native budget.
+    uint32 m_multiclassBonusTalentPoints;
+    // Last bonus this class's spent talents may rely on. Stays put when a lower recalc would delete points.
+    uint32 m_multiclassHonoredBonus;
+    // Spent talents were kept because the new budget fell under points already spent.
+    bool m_multiclassTalentOverSpent;
 
     // Social
     PlayerSocial* m_social;
@@ -3070,6 +3081,11 @@ private:
 
     void LoadOtherClassWeaponSkills();
     void ApplyWeaponSkillFloor();
+    // Other classes' saved levels / 3, capped. Runs on login and after a class change.
+    void RefreshMulticlassBonusTalents();
+    [[nodiscard]] uint32 CountSpecTalentPoints(uint8 spec) const;
+    [[nodiscard]] bool MulticlassSpentExceeds(uint32 budget) const;
+    void ApplyMulticlassTalentBonus(uint32 otherLevels, uint32 loadedHonored);
     void LoadClassMastery();
     void GrantClassMastery();
     void MarkClassMastered(uint8 classId, uint8 level);

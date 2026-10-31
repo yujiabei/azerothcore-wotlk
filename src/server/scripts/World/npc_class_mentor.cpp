@@ -21,6 +21,8 @@
 #include "DBCStores.h"
 #include "DatabaseEnv.h"
 #include "GameTime.h"
+#include "Item.h"
+#include "ItemScript.h"
 #include "Language.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -156,20 +158,112 @@ std::string ClassLabel(Player const* player, uint8 classId)
     return Acore::StringFormat("{}", uint32(classId));
 }
 
-std::string SpellLabel(Player const* player, uint32 spellId)
+char const* LocaleField(std::array<char const*, 16> const& field, LocaleConstant locale)
 {
-    LocaleConstant locale = player->GetSession()->GetSessionDbcLocale();
-    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId))
+    if (locale < TOTAL_LOCALES && field[locale] && field[locale][0])
+        return field[locale];
+    return nullptr;
+}
+
+// zhCN comes from Spell.dbc / spell_dbc. An empty slot falls back to enUS.
+std::string SpellNameText(SpellInfo const* info)
+{
+    if (!info)
+        return {};
+
+    if (char const* name = LocaleField(info->SpellName, LOCALE_zhCN))
+        return name;
+    if (char const* name = LocaleField(info->SpellName, LOCALE_enUS))
+        return name;
+    return {};
+}
+
+struct SpellOrder
+{
+    std::string Name;
+    uint8 Rank = 1;
+    uint32 SpellId = 0;
+};
+
+SpellOrder OrderOf(uint32 spellId)
+{
+    SpellOrder order;
+    order.SpellId = spellId;
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+    if (!info)
+        return order;
+
+    order.Name = SpellNameText(info);
+    order.Rank = info->GetRank();
+    if (order.Name.empty())
+        order.Name = Acore::StringFormat("{}", spellId);
+    return order;
+}
+
+bool SpellOrderLess(SpellOrder const& left, SpellOrder const& right)
+{
+    if (left.Name != right.Name)
+        return left.Name < right.Name;
+    if (left.Rank != right.Rank)
+        return left.Rank < right.Rank;
+    return left.SpellId < right.SpellId;
+}
+
+void SortSpellIds(std::vector<uint32>& spellIds)
+{
+    std::vector<SpellOrder> orders;
+    orders.reserve(spellIds.size());
+    for (uint32 spellId : spellIds)
+        orders.push_back(OrderOf(spellId));
+
+    std::sort(orders.begin(), orders.end(), SpellOrderLess);
+    for (size_t index = 0; index < spellIds.size(); ++index)
+        spellIds[index] = orders[index].SpellId;
+}
+
+void FitUtf8(std::string& text, size_t maxBytes)
+{
+    if (text.size() <= maxBytes)
+        return;
+
+    size_t end = 0;
+    while (end < text.size())
     {
-        char const* name = nullptr;
-        if (locale < TOTAL_LOCALES)
-            name = info->SpellName[locale];
-        if ((!name || !name[0]) && info->SpellName[LOCALE_enUS] && info->SpellName[LOCALE_enUS][0])
-            name = info->SpellName[LOCALE_enUS];
-        if (name && name[0])
-            return name;
+        uint8 lead = uint8(text[end]);
+        size_t width = 1;
+        if (lead >= 0x80)
+        {
+            if ((lead & 0xE0) == 0xC0)
+                width = 2;
+            else if ((lead & 0xF0) == 0xE0)
+                width = 3;
+            else if ((lead & 0xF8) == 0xF0)
+                width = 4;
+            else
+                break;
+        }
+
+        if (end + width > maxBytes || end + width > text.size())
+            break;
+        end += width;
     }
-    return Acore::StringFormat("{}", spellId);
+    text.resize(end);
+}
+
+// Session locale is ignored. The retain list is always zhCN, with enUS as fallback.
+std::string SpellLabel(Player const* /*player*/, uint32 spellId)
+{
+    if (!sSpellMgr->GetSpellInfo(spellId))
+        return Acore::StringFormat("{}", spellId);
+
+    SpellOrder order = OrderOf(spellId);
+    // Rank is SpellInfo::GetRank() (spell_ranks, or the talent chain). Unranked spells are 1.
+    std::string suffix = Acore::StringFormat("（等级 {}）", uint32(order.Rank));
+    // Leave room for the "保留：" / "Remove: " prefix inside Short()'s 90-byte cap.
+    constexpr size_t MaxLabelBytes = 78;
+    if (suffix.size() < MaxLabelBytes && order.Name.size() + suffix.size() > MaxLabelBytes)
+        FitUtf8(order.Name, MaxLabelBytes - suffix.size());
+    return order.Name + suffix;
 }
 
 uint8 SlotsForLevel(uint8 level)
@@ -360,29 +454,31 @@ void AppendSwitchStatus(Player* player, uint32 sender)
         AddOption(player, T(player, LANG_MULTICLASS_PENDING), sender, ACT_REFRESH);
 }
 
-void ShowMain(Player* player, Creature* creature);
-void ShowConfirm(Player* player, Creature* creature, uint8 classId);
-void ShowRetain(Player* player, Creature* creature);
-void ShowClassRetain(Player* player, Creature* creature, uint8 classId);
-void ShowSpellPage(Player* player, Creature* creature, uint32 sender, bool talents);
-void ShowSynergy(Player* player, Creature* creature, uint32 page);
+// The menu is the same for the mentor and the bag item. source is that creature or item.
+// An item source skips the capital-city check when the switch is confirmed.
+void ShowMain(Player* player, ObjectGuid const& source);
+void ShowConfirm(Player* player, ObjectGuid const& source, uint8 classId);
+void ShowRetain(Player* player, ObjectGuid const& source);
+void ShowClassRetain(Player* player, ObjectGuid const& source, uint8 classId);
+void ShowSpellPage(Player* player, ObjectGuid const& source, uint32 sender, bool talents);
+void ShowSynergy(Player* player, ObjectGuid const& source, uint32 page);
 
-void ShowForSender(Player* player, Creature* creature, uint32 sender)
+void ShowForSender(Player* player, ObjectGuid const& source, uint32 sender)
 {
     if (sender >= SENDER_SYNERGY_BASE && sender < SENDER_SYNERGY_BASE + PAGE_STRIDE)
-        ShowSynergy(player, creature, sender - SENDER_SYNERGY_BASE);
+        ShowSynergy(player, source, sender - SENDER_SYNERGY_BASE);
     else if (sender >= SENDER_TALENT_BASE && sender < SENDER_SYNERGY_BASE)
-        ShowSpellPage(player, creature, sender, true);
+        ShowSpellPage(player, source, sender, true);
     else if (sender >= SENDER_SPELL_BASE && sender < SENDER_TALENT_BASE)
-        ShowSpellPage(player, creature, sender, false);
+        ShowSpellPage(player, source, sender, false);
     else if (sender >= SENDER_CLASS_BASE && sender < SENDER_CLASS_BASE + MAX_CLASSES)
-        ShowClassRetain(player, creature, uint8(sender - SENDER_CLASS_BASE));
+        ShowClassRetain(player, source, uint8(sender - SENDER_CLASS_BASE));
     else if (sender == SENDER_RETAIN)
-        ShowRetain(player, creature);
+        ShowRetain(player, source);
     else if (sender >= SENDER_CONFIRM_BASE && sender < SENDER_CONFIRM_BASE + MAX_CLASSES)
-        ShowConfirm(player, creature, uint8(sender - SENDER_CONFIRM_BASE));
+        ShowConfirm(player, source, uint8(sender - SENDER_CONFIRM_BASE));
     else
-        ShowMain(player, creature);
+        ShowMain(player, source);
 }
 
 uint32 ParentSender(uint32 sender)
@@ -431,7 +527,7 @@ uint32 ShiftPage(uint32 sender, int delta)
     return base + classId * PAGE_STRIDE + page;
 }
 
-void ShowMain(Player* player, Creature* creature)
+void ShowMain(Player* player, ObjectGuid const& source)
 {
     AppendSwitchStatus(player, SENDER_MAIN);
 
@@ -473,14 +569,14 @@ void ShowMain(Player* player, Creature* creature)
     }
 
     AddOption(player, T(player, LANG_MULTICLASS_MENU_RETAIN), SENDER_RETAIN, ACT_REFRESH);
-    SendGossipMenuFor(player, MENTOR_TEXT, creature);
+    SendGossipMenuFor(player, MENTOR_TEXT, source);
 }
 
-void ShowConfirm(Player* player, Creature* creature, uint8 classId)
+void ShowConfirm(Player* player, ObjectGuid const& source, uint8 classId)
 {
     if (!classId || classId >= MAX_CLASSES || classId == player->getClass())
     {
-        ShowMain(player, creature);
+        ShowMain(player, source);
         return;
     }
 
@@ -488,10 +584,10 @@ void ShowConfirm(Player* player, Creature* creature, uint8 classId)
     AppendSwitchStatus(player, sender);
     AddOption(player, Tf(player, LANG_MULTICLASS_MENU_CONFIRM, ClassLabel(player, classId)), sender, ACT_CONFIRM);
     AddOption(player, T(player, LANG_MULTICLASS_MENU_BACK), sender, ACT_BACK);
-    SendGossipMenuFor(player, MENTOR_TEXT, creature);
+    SendGossipMenuFor(player, MENTOR_TEXT, source);
 }
 
-void ShowRetain(Player* player, Creature* creature)
+void ShowRetain(Player* player, ObjectGuid const& source)
 {
     MentorView view;
     LoadSnapshots(player, view);
@@ -518,16 +614,16 @@ void ShowRetain(Player* player, Creature* creature)
         AddOption(player, T(player, LANG_MULTICLASS_MENU_SYNERGY), SENDER_SYNERGY_BASE, ACT_REFRESH);
 
     AddOption(player, T(player, LANG_MULTICLASS_MENU_BACK), SENDER_RETAIN, ACT_BACK);
-    SendGossipMenuFor(player, MENTOR_TEXT, creature);
+    SendGossipMenuFor(player, MENTOR_TEXT, source);
 }
 
-void ShowClassRetain(Player* player, Creature* creature, uint8 classId)
+void ShowClassRetain(Player* player, ObjectGuid const& source, uint8 classId)
 {
     MentorView view;
     LoadSnapshots(player, view);
     if (!classId || classId >= MAX_CLASSES || !view.Classes[classId].Present)
     {
-        ShowRetain(player, creature);
+        ShowRetain(player, source);
         return;
     }
 
@@ -539,16 +635,23 @@ void ShowClassRetain(Player* player, Creature* creature, uint8 classId)
     AddOption(player, Tf(player, LANG_MULTICLASS_MENU_SPELLS, spells, slots), sender, ACT_SPELLS);
     AddOption(player, Tf(player, LANG_MULTICLASS_MENU_TALENTS, talents, slots), sender, ACT_TALENTS);
 
+    std::vector<RetainPick> picks;
     for (RetainPick const& row : view.Retained)
     {
         if (row.SourceClass != classId || (row.Kind != RETAIN_KIND_SPELL && row.Kind != RETAIN_KIND_TALENT))
             continue;
+        picks.push_back(row);
+    }
+    std::sort(picks.begin(), picks.end(), [](RetainPick const& left, RetainPick const& right)
+    {
+        return SpellOrderLess(OrderOf(left.SpellId), OrderOf(right.SpellId));
+    });
+    for (RetainPick const& row : picks)
         AddOption(player, Tf(player, LANG_MULTICLASS_PICK_REMOVE, SpellLabel(player, row.SpellId)),
             sender, row.SpellId);
-    }
 
     AddOption(player, T(player, LANG_MULTICLASS_MENU_BACK), sender, ACT_BACK);
-    SendGossipMenuFor(player, MENTOR_TEXT, creature);
+    SendGossipMenuFor(player, MENTOR_TEXT, source);
 }
 
 std::vector<uint32> Candidates(MentorView const& view, uint8 classId, bool talents)
@@ -574,7 +677,7 @@ std::vector<uint32> Candidates(MentorView const& view, uint8 classId, bool talen
                 ids.push_back(spellId);
     }
 
-    std::sort(ids.begin(), ids.end());
+    SortSpellIds(ids);
     return ids;
 }
 
@@ -587,7 +690,7 @@ void AddPageNav(Player* player, uint32 sender, uint32 page, size_t count)
     AddOption(player, T(player, LANG_MULTICLASS_MENU_BACK), sender, ACT_BACK);
 }
 
-void ShowSpellPage(Player* player, Creature* creature, uint32 sender, bool talents)
+void ShowSpellPage(Player* player, ObjectGuid const& source, uint32 sender, bool talents)
 {
     uint32 base = talents ? SENDER_TALENT_BASE : SENDER_SPELL_BASE;
     uint32 rem = sender >= base ? sender - base : 0;
@@ -598,7 +701,7 @@ void ShowSpellPage(Player* player, Creature* creature, uint32 sender, bool talen
     LoadSnapshots(player, view);
     if (!classId || classId >= MAX_CLASSES || !view.Classes[classId].Present)
     {
-        ShowRetain(player, creature);
+        ShowRetain(player, source);
         return;
     }
 
@@ -621,7 +724,7 @@ void ShowSpellPage(Player* player, Creature* creature, uint32 sender, bool talen
     }
 
     AddPageNav(player, sender, page, ids.size());
-    SendGossipMenuFor(player, MENTOR_TEXT, creature);
+    SendGossipMenuFor(player, MENTOR_TEXT, source);
 }
 
 std::vector<SynergyChoice> SynergyChoices(MentorView const& view)
@@ -636,7 +739,7 @@ std::vector<SynergyChoice> SynergyChoices(MentorView const& view)
     }
     std::sort(choices.begin(), choices.end(), [](SynergyChoice const& left, SynergyChoice const& right)
     {
-        return left.SpellId < right.SpellId;
+        return SpellOrderLess(OrderOf(left.SpellId), OrderOf(right.SpellId));
     });
 
     std::vector<uint32> adds;
@@ -660,19 +763,22 @@ std::vector<SynergyChoice> SynergyChoices(MentorView const& view)
         for (uint32 spellId : view.Talents[classId])
             consider(spellId);
     }
-    std::sort(adds.begin(), adds.end());
+    std::sort(adds.begin(), adds.end(), [](uint32 left, uint32 right)
+    {
+        return SpellOrderLess(OrderOf(left), OrderOf(right));
+    });
     for (uint32 spellId : adds)
         choices.push_back({ spellId, false });
     return choices;
 }
 
-void ShowSynergy(Player* player, Creature* creature, uint32 page)
+void ShowSynergy(Player* player, ObjectGuid const& source, uint32 page)
 {
     MentorView view;
     LoadSnapshots(player, view);
     if (view.SynergyClasses < 2)
     {
-        ShowRetain(player, creature);
+        ShowRetain(player, source);
         return;
     }
 
@@ -700,19 +806,21 @@ void ShowSynergy(Player* player, Creature* creature, uint32 page)
     }
 
     AddPageNav(player, sender, page, choices.size());
-    SendGossipMenuFor(player, MENTOR_TEXT, creature);
+    SendGossipMenuFor(player, MENTOR_TEXT, source);
 }
 
-void ConfirmSwitch(Player* player, Creature* creature, uint32 sender)
+void ConfirmSwitch(Player* player, ObjectGuid const& source, uint32 sender)
 {
     if (sender < SENDER_CONFIRM_BASE || sender >= SENDER_CONFIRM_BASE + MAX_CLASSES)
     {
-        ShowMain(player, creature);
+        ShowMain(player, source);
         return;
     }
 
     uint8 classId = uint8(sender - SENDER_CONFIRM_BASE);
-    ClassChangeRequestStatus status = player->RequestClassChange(classId);
+    // The mentor keeps Multiclass.RequireCity. The bag item does not.
+    bool requireCity = !source.IsItem();
+    ClassChangeRequestStatus status = player->RequestClassChange(classId, requireCity);
     if (status.Result == CLASS_CHANGE_OK)
     {
         std::string text = Tf(player, LANG_MULTICLASS_QUEUED, ClassLabel(player, classId));
@@ -726,10 +834,10 @@ void ConfirmSwitch(Player* player, Creature* creature, uint32 sender)
         ? Tf(player, LANG_MULTICLASS_ERR_COOLDOWN, status.Extra)
         : T(player, ErrorEntry(status.Result));
     ChatHandler(player->GetSession()).SendSysMessage(text.c_str());
-    ShowConfirm(player, creature, classId);
+    ShowConfirm(player, source, classId);
 }
 
-void HandleSpellAction(Player* player, Creature* creature, uint32 sender, uint32 spellId)
+void HandleSpellAction(Player* player, ObjectGuid const& source, uint32 sender, uint32 spellId)
 {
     ChatHandler handler(player->GetSession());
     if (sender >= SENDER_CLASS_BASE && sender < SENDER_CLASS_BASE + MAX_CLASSES)
@@ -751,11 +859,11 @@ void HandleSpellAction(Player* player, Creature* creature, uint32 sender, uint32
         player->AddRetainedSpell(spellId, false, -1, &handler);
     else
     {
-        ShowMain(player, creature);
+        ShowMain(player, source);
         return;
     }
 
-    ShowForSender(player, creature, sender);
+    ShowForSender(player, source, sender);
 }
 
 bool Refuse(Player* player, Creature* creature)
@@ -780,6 +888,79 @@ bool Refuse(Player* player, Creature* creature)
 
     return false;
 }
+
+void HandleMenuAction(Player* player, ObjectGuid const& source, uint32 sender, uint32 action)
+{
+    if (action == ACT_BACK)
+    {
+        ShowForSender(player, source, ParentSender(sender));
+        return;
+    }
+
+    if (action == ACT_NEXT || action == ACT_PREV)
+    {
+        ShowForSender(player, source, ShiftPage(sender, action == ACT_NEXT ? 1 : -1));
+        return;
+    }
+
+    if ((action == ACT_SPELLS || action == ACT_TALENTS)
+        && sender >= SENDER_CLASS_BASE && sender < SENDER_CLASS_BASE + MAX_CLASSES)
+    {
+        uint32 base = action == ACT_TALENTS ? SENDER_TALENT_BASE : SENDER_SPELL_BASE;
+        ShowForSender(player, source, base + (sender - SENDER_CLASS_BASE) * PAGE_STRIDE);
+        return;
+    }
+
+    if (action == ACT_CONFIRM)
+    {
+        ConfirmSwitch(player, source, sender);
+        return;
+    }
+
+    if (action == ACT_SYNERGY)
+    {
+        ShowSynergy(player, source, 0);
+        return;
+    }
+
+    if (!action || action >= 0xF0000000)
+    {
+        ShowForSender(player, source, sender);
+        return;
+    }
+
+    HandleSpellAction(player, source, sender, action);
+}
+
+// fromUse sends an inventory error so the client releases the item. A menu click just closes.
+bool RefuseItem(Player* player, Item* item, bool fromUse)
+{
+    auto stop = [&](uint32 text, InventoryResult err)
+    {
+        if (player && player->GetSession())
+            ChatHandler(player->GetSession()).SendSysMessage(T(player, text).c_str());
+        if (fromUse && player && item)
+            player->SendEquipError(err, item, nullptr);
+        else if (player)
+            CloseGossipMenuFor(player);
+        return true;
+    };
+
+    if (!player || !player->GetSession() || !item)
+        return true;
+
+    uint32 entry = sConfigMgr->GetOption<uint32>("Multiclass.MentorItemEntry", 550001, false);
+    if (!entry || item->GetEntry() != entry)
+        return stop(LANG_MULTICLASS_NPC_DISABLED, EQUIP_ERR_CANT_DO_RIGHT_NOW);
+
+    if (player->IsInCombat())
+        return stop(LANG_MULTICLASS_ERR_COMBAT, EQUIP_ERR_NOT_IN_COMBAT);
+
+    if (IsRandomBotGuid(player->GetGUID().GetCounter()) || player->GetSession()->IsBot())
+        return stop(LANG_MULTICLASS_BOT, EQUIP_ERR_CANT_DO_RIGHT_NOW);
+
+    return false;
+}
 }
 
 class npc_class_mentor : public CreatureScript
@@ -792,7 +973,7 @@ public:
         if (Refuse(player, creature))
             return true;
 
-        ShowMain(player, creature);
+        ShowMain(player, creature->GetGUID());
         return true;
     }
 
@@ -802,50 +983,40 @@ public:
         if (Refuse(player, creature))
             return true;
 
-        if (action == ACT_BACK)
-        {
-            ShowForSender(player, creature, ParentSender(sender));
-            return true;
-        }
-
-        if (action == ACT_NEXT || action == ACT_PREV)
-        {
-            ShowForSender(player, creature, ShiftPage(sender, action == ACT_NEXT ? 1 : -1));
-            return true;
-        }
-
-        if ((action == ACT_SPELLS || action == ACT_TALENTS)
-            && sender >= SENDER_CLASS_BASE && sender < SENDER_CLASS_BASE + MAX_CLASSES)
-        {
-            uint32 base = action == ACT_TALENTS ? SENDER_TALENT_BASE : SENDER_SPELL_BASE;
-            ShowForSender(player, creature, base + (sender - SENDER_CLASS_BASE) * PAGE_STRIDE);
-            return true;
-        }
-
-        if (action == ACT_CONFIRM)
-        {
-            ConfirmSwitch(player, creature, sender);
-            return true;
-        }
-
-        if (action == ACT_SYNERGY)
-        {
-            ShowSynergy(player, creature, 0);
-            return true;
-        }
-
-        if (!action || action >= 0xF0000000)
-        {
-            ShowForSender(player, creature, sender);
-            return true;
-        }
-
-        HandleSpellAction(player, creature, sender, action);
+        HandleMenuAction(player, creature->GetGUID(), sender, action);
         return true;
+    }
+};
+
+class item_class_mentor : public ItemScript
+{
+public:
+    item_class_mentor() : ItemScript("item_class_mentor") { }
+
+    bool OnUse(Player* player, Item* item, SpellCastTargets const& /*targets*/) override
+    {
+        if (RefuseItem(player, item, true))
+            return true;
+
+        // Spell 836 is not cast. Its effect is Spawn. Release the use, then open the menu.
+        player->SendEquipError(EQUIP_ERR_NONE, item, nullptr);
+        ClearGossipMenuFor(player);
+        ShowMain(player, item->GetGUID());
+        return true;
+    }
+
+    void OnGossipSelect(Player* player, Item* item, uint32 sender, uint32 action) override
+    {
+        ClearGossipMenuFor(player);
+        if (RefuseItem(player, item, false))
+            return;
+
+        HandleMenuAction(player, item->GetGUID(), sender, action);
     }
 };
 
 void AddSC_npc_class_mentor()
 {
     new npc_class_mentor();
+    new item_class_mentor();
 }

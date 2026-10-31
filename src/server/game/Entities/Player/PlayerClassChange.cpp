@@ -345,7 +345,7 @@ void AppendClassDelete(CharacterDatabaseTransaction trans, CharacterDatabaseStat
 }
 
 void AppendProgress(CharacterDatabaseTransaction trans, uint32 guid, uint8 playerClass, uint8 level, uint32 xp,
-    float rest, uint8 spec, uint32 levelTime, uint32 petId, uint32 dailyBonusAt)
+    float rest, uint8 spec, uint32 levelTime, uint32 petId, uint32 dailyBonusAt, uint32 talentBonus)
 {
     CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_REP_CLASS_PROGRESS);
     stmt->SetData(0, guid);
@@ -357,6 +357,7 @@ void AppendProgress(CharacterDatabaseTransaction trans, uint32 guid, uint8 playe
     stmt->SetData(6, levelTime);
     stmt->SetData(7, petId);
     stmt->SetData(8, dailyBonusAt);
+    stmt->SetData(9, talentBonus);
     trans->Append(stmt);
 }
 
@@ -469,7 +470,7 @@ ClassArchive LoadArchive(uint32 guid, uint8 playerClass, ProgressSnap const& pro
 }
 
 void StoreArchive(uint32 guid, uint8 playerClass, ClassArchive const& archive, uint8 level, uint32 xp, float rest,
-    uint8 spec, uint32 levelTime, uint32 dailyBonusAt, std::vector<EquipSnap> const& equipment)
+    uint8 spec, uint32 levelTime, uint32 dailyBonusAt, std::vector<EquipSnap> const& equipment, uint32 talentBonus)
 {
     CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
     AppendClassDelete(trans, CHAR_DEL_CLASS_SPELL_BY_CLASS, guid, playerClass);
@@ -562,7 +563,8 @@ void StoreArchive(uint32 guid, uint8 playerClass, ClassArchive const& archive, u
         trans->Append(stmt);
     }
 
-    AppendProgress(trans, guid, playerClass, level, xp, rest, spec, levelTime, archive.PetId, dailyBonusAt);
+    AppendProgress(trans, guid, playerClass, level, xp, rest, spec, levelTime, archive.PetId, dailyBonusAt,
+        talentBonus);
     CharacterDatabase.DirectCommitTransaction(trans);
 }
 
@@ -1177,7 +1179,7 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
     }
 
     StoreArchive(guid, oldClass, outgoing, GetLevel(), GetUInt32Value(PLAYER_XP), GetRestBonus(), GetActiveSpec(),
-        GetLevelPlayedTime(), m_classDailyBonusAt, equipped);
+        GetLevelPlayedTime(), m_classDailyBonusAt, equipped, m_multiclassHonoredBonus);
     // The old class row is committed. Legacy level and catch-up both read this cache.
     RefreshHighestClassLevel();
 
@@ -1471,6 +1473,8 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
         if (row.SpecMask)
             addTalent(row.Id, row.SpecMask, 0);
 
+    // Incoming build is loaded, so a lower budget can see points already spent.
+    RefreshMulticlassBonusTalents();
     InitTalentForLevel();
     // addTalent does not repeat LearnTalent's spellbook grant. Do this after the level
     // check so a talent reset does not leave the rank-1 spell behind.
@@ -1619,7 +1623,7 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
     if (sConfigMgr->GetOption<bool>("Multiclass.ResetArenaOnSwitch", false))
         SetAtLoginFlag(AT_LOGIN_RESET_ARENA);
 
-    RemoveAtLoginFlag(AT_LOGIN_CHANGE_CLASS, false);
+    RemoveAtLoginFlag(AtLoginFlags(AT_LOGIN_CHANGE_CLASS | AT_LOGIN_CHANGE_CLASS_ANYWHERE), false);
 
     sCharacterCache->UpdateCharacterClass(GetGUID(), newClass);
     if (uint32 guildId = GetGuildId())
@@ -1629,7 +1633,7 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
 
     ConsumeArchive(trans, guid, newClass);
     AppendProgress(trans, guid, newClass, GetLevel(), GetUInt32Value(PLAYER_XP), GetRestBonus(), GetActiveSpec(),
-        GetLevelPlayedTime(), returning ? incoming.PetId : 0, m_classDailyBonusAt);
+        GetLevelPlayedTime(), returning ? incoming.PetId : 0, m_classDailyBonusAt, m_multiclassHonoredBonus);
     for (PetPark const& parked : parkedPets)
     {
         AppendPetSlot(trans, guid, parked.PetId, uint8(PET_SAVE_NOT_IN_SLOT), parked.Class);
@@ -1676,7 +1680,7 @@ bool Player::IsInCapitalCity() const
     return zone && (zone->flags & AREA_FLAG_CAPITAL) != 0;
 }
 
-ClassChangeRequestStatus Player::RequestClassChange(uint8 newClass)
+ClassChangeRequestStatus Player::RequestClassChange(uint8 newClass, bool requireCity)
 {
     ClassChangeRequestStatus status;
     if (!sConfigMgr->GetOption<bool>("Multiclass.Enable", true))
@@ -1751,7 +1755,7 @@ ClassChangeRequestStatus Player::RequestClassChange(uint8 newClass)
         return status;
     }
 
-    if (sConfigMgr->GetOption<bool>("Multiclass.RequireCity", true) && !IsInCapitalCity())
+    if (requireCity && sConfigMgr->GetOption<bool>("Multiclass.RequireCity", true) && !IsInCapitalCity())
     {
         status.Result = CLASS_CHANGE_CITY;
         return status;
@@ -1770,13 +1774,16 @@ ClassChangeRequestStatus Player::RequestClassChange(uint8 newClass)
     stmt->SetData(2, now);
     CharacterDatabase.DirectExecute(stmt);
 
-    SetAtLoginFlag(AT_LOGIN_CHANGE_CLASS);
+    uint16 loginFlags = uint16(AT_LOGIN_CHANGE_CLASS);
+    if (!requireCity)
+        loginFlags |= uint16(AT_LOGIN_CHANGE_CLASS_ANYWHERE);
+    SetAtLoginFlag(AtLoginFlags(loginFlags));
     // Sync connection, and it must finish before logout stores the cleared flag.
     // An async OR can land after that save and make the next login switch again.
     // The statement is prepared on both connections. Async-only asserts in
     // MySQLConnection::Execute (statement 224) and logout never reaches the save.
     CharacterDatabasePreparedStatement* flagStmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_ADD_AT_LOGIN_FLAG);
-    flagStmt->SetData(0, uint16(AT_LOGIN_CHANGE_CLASS));
+    flagStmt->SetData(0, loginFlags);
     flagStmt->SetData(1, GetGUID().GetCounter());
     CharacterDatabase.DirectExecute(flagStmt);
     LOG_DEBUG("multiclass", "Queued class change for {} ({}) {} -> {}",
@@ -1852,14 +1859,14 @@ bool Player::ApplyPendingClassChange(CharacterDatabaseTransaction trans, bool ci
 
     auto clearPending = [this, trans]()
     {
-        RemoveAtLoginFlag(AT_LOGIN_CHANGE_CLASS, false);
+        RemoveAtLoginFlag(AtLoginFlags(AT_LOGIN_CHANGE_CLASS | AT_LOGIN_CHANGE_CLASS_ANYWHERE), false);
         CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CLASS_SWITCH_CLEAR);
         stmt->SetData(0, GetGUID().GetCounter());
         trans->Append(stmt);
 
         CharacterDatabasePreparedStatement* flagStmt =
             CharacterDatabase.GetPreparedStatement(CHAR_UPD_REM_AT_LOGIN_FLAG);
-        flagStmt->SetData(0, uint16(AT_LOGIN_CHANGE_CLASS));
+        flagStmt->SetData(0, uint16(AT_LOGIN_CHANGE_CLASS | AT_LOGIN_CHANGE_CLASS_ANYWHERE));
         flagStmt->SetData(1, GetGUID().GetCounter());
         trans->Append(flagStmt);
     };
@@ -1875,8 +1882,10 @@ bool Player::ApplyPendingClassChange(CharacterDatabaseTransaction trans, bool ci
     // The command already checked the city before logout. This covers an offline queue
     // and a crash before that logout. Cancelling here does not charge the switch cost.
     // A request whose flag update asserted already passed the check. Apply that one anyway.
-    if (!cityAlreadyChecked && isBeingLoaded() && sConfigMgr->GetOption<bool>("Multiclass.RequireCity", true)
-        && !IsInCapitalCity())
+    // The bag item sets AT_LOGIN_CHANGE_CLASS_ANYWHERE, so that request still applies here.
+    bool anywhere = HasAtLoginFlag(AT_LOGIN_CHANGE_CLASS_ANYWHERE);
+    if (!cityAlreadyChecked && !anywhere && isBeingLoaded()
+        && sConfigMgr->GetOption<bool>("Multiclass.RequireCity", true) && !IsInCapitalCity())
     {
         clearPending();
         MailCityChangeRefusal(this);
@@ -1911,4 +1920,120 @@ bool Player::ApplyPendingClassChange(CharacterDatabaseTransaction trans, bool ci
     }
 
     return true;
+}
+
+uint32 Player::CountSpecTalentPoints(uint8 spec) const
+{
+    uint32 spent = 0;
+    uint8 mask = uint8(1u << spec);
+    for (auto const& talent : m_talents)
+    {
+        PlayerTalent const* entry = talent.second;
+        if (!entry || entry->State == PLAYERSPELL_REMOVED || (entry->specMask & mask) == 0)
+            continue;
+
+        spent += GetTalentSpellCost(talent.first);
+    }
+
+    return spent;
+}
+
+bool Player::MulticlassSpentExceeds(uint32 budget) const
+{
+    if (m_usedTalentCount > budget)
+        return true;
+
+    uint8 specs = GetSpecsCount();
+    if (!specs)
+        specs = 1;
+    if (specs > MAX_TALENT_SPECS)
+        specs = MAX_TALENT_SPECS;
+
+    for (uint8 spec = 0; spec < specs; ++spec)
+        if (CountSpecTalentPoints(spec) > budget)
+            return true;
+
+    return false;
+}
+
+void Player::ApplyMulticlassTalentBonus(uint32 otherLevels, uint32 loadedHonored)
+{
+    bool enabled = sConfigMgr->GetOption<bool>("Multiclass.Enable", true);
+    uint32 rawBonus = enabled ? otherLevels / 3 : 0;
+    uint32 cap = GetMulticlassTalentBonusCap();
+    uint32 newBonus = rawBonus > cap ? cap : rawBonus;
+    uint32 honored = loadedHonored;
+
+    m_multiclassBonusTalentPoints = newBonus;
+    uint32 budgetNew = CalculateTalentsPoints();
+    uint32 budgetHonored = budgetNew;
+    if (newBonus < honored)
+    {
+        m_multiclassBonusTalentPoints = honored;
+        budgetHonored = CalculateTalentsPoints();
+        m_multiclassBonusTalentPoints = newBonus;
+    }
+
+    bool overNew = MulticlassSpentExceeds(budgetNew);
+    bool overHonored = newBonus < honored && MulticlassSpentExceeds(budgetHonored);
+    // The new bonus is lower, but points already spent still fit the bonus this class was
+    // last allowed to keep. Leave those talents. An active spec over the new budget gets
+    // no unspent points. A spec that still fits keeps its unspent points.
+    if (newBonus < honored && overNew && !overHonored)
+    {
+        m_multiclassHonoredBonus = honored;
+        m_multiclassTalentOverSpent = true;
+        LOG_INFO("entities.player",
+            "Player {} ({}) kept spent talents: bonus fell from {} to {}. "
+            "Other levels {} / 3 = {}, cap {}. Active spec {} spent {}, new budget {}.",
+            GetName(), GetGUID().ToString(), honored, newBonus, otherLevels, rawBonus, cap,
+            uint32(GetActiveSpec()), m_usedTalentCount, budgetNew);
+    }
+    else
+    {
+        m_multiclassHonoredBonus = newBonus;
+        m_multiclassTalentOverSpent = false;
+        LOG_DEBUG("multiclass",
+            "Talent bonus for {} ({}) class {} other levels {} raw {} cap {} granted {} budget {}",
+            GetName(), GetGUID().ToString(), uint32(getClass()), otherLevels, rawBonus, cap, newBonus,
+            budgetNew);
+    }
+
+    if (m_multiclassHonoredBonus == loadedHonored)
+        return;
+
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_CLASS_TALENT_BONUS);
+    stmt->SetData(0, m_multiclassHonoredBonus);
+    stmt->SetData(1, GetGUID().GetCounter());
+    stmt->SetData(2, getClass());
+    CharacterDatabase.DirectExecute(stmt);
+}
+
+void Player::RefreshMulticlassBonusTalents()
+{
+    uint32 otherLevels = 0;
+    uint32 loadedHonored = 0;
+    CharacterDatabasePreparedStatement* stmt =
+        CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_TALENT_BONUS_LEVELS);
+    stmt->SetData(0, GetGUID().GetCounter());
+    if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
+    {
+        uint8 current = getClass();
+        do
+        {
+            Field* fields = result->Fetch();
+            uint8 playerClass = fields[0].Get<uint8>();
+            uint8 level = fields[1].Get<uint8>();
+            uint32 talentBonus = fields[2].Get<uint32>();
+            if (!playerClass)
+                continue;
+
+            if (playerClass == current)
+                loadedHonored = talentBonus;
+            else
+                otherLevels += level;
+        } while (result->NextRow());
+    }
+
+    ApplyMulticlassTalentBonus(otherLevels, loadedHonored);
 }
