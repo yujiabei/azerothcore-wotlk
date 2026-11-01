@@ -2737,7 +2737,7 @@ Multiclass.Retain.Cooldown = 0
 #        Description: 1 rejects forms, summons, runes, combo points, stealth-only spells,
 #                     stance requirements, skill teachers, class mounts, teleports, and
 #                     a power type the current class cannot pay.
-#                     0 keeps the learned-spell, slot, rank, and battleground checks.
+#                     0 keeps the learned-spell, slot, and battleground checks.
 #        Default:     1
 
 Multiclass.Retain.EnforceRules = 1
@@ -2755,15 +2755,6 @@ Multiclass.Retain.AllowSpells =
 #        Default:     <empty>
 
 Multiclass.Retain.DenySpells =
-
-#
-#    Multiclass.RetainLevelGrace
-#        Description: A retained active uses the highest rank on its chain whose
-#                     SpellLevel is at most the current level plus this value, and
-#                     not above the rank the player picked.
-#        Default:     10
-
-Multiclass.RetainLevelGrace = 10
 
 #
 #    Multiclass.RetainPassivesInPvP

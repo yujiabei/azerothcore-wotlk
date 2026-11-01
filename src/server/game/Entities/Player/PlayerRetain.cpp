@@ -374,34 +374,6 @@ RetainDeny ValidateRules(SpellInfo const* info, uint8 currentClass, bool require
     return RetainDeny::None;
 }
 
-uint32 SelectActiveRank(SpellInfo const* picked, uint32 levelLimit)
-{
-    uint32 first = sSpellMgr->GetFirstSpellInChain(picked->Id);
-    SpellInfo const* info = sSpellMgr->GetSpellInfo(first ? first : picked->Id);
-    uint32 best = 0;
-    bool sawPicked = false;
-    for (uint8 guard = 0; info && guard < 32; ++guard)
-    {
-        if (info->SpellLevel <= levelLimit)
-            best = info->Id;
-        if (info->Id == picked->Id)
-        {
-            sawPicked = true;
-            break;
-        }
-        info = info->GetNextRankSpell();
-    }
-    return sawPicked ? best : 0;
-}
-
-uint32 RetainLevelLimit(Player const* player)
-{
-    uint64 limit = uint64(player->GetLevel()) + RetainOption<uint32>("Multiclass.RetainLevelGrace", 10);
-    if (limit > std::numeric_limits<uint32>::max())
-        return std::numeric_limits<uint32>::max();
-    return uint32(limit);
-}
-
 bool ClassOwnsChain(Player const* player, uint32 spellId)
 {
     uint32 first = sSpellMgr->GetFirstSpellInChain(spellId);
@@ -618,20 +590,12 @@ ApplyPlan PlanRetain(Player const* player, RetainContext const& ctx, RetainRow c
     if (suppressed && (!info->IsPassive() || !RetainOption<bool>("Multiclass.RetainPassivesInPvP", true)))
         return { 0, "disabled in a battleground or arena", true };
 
-    uint32 applyId = info->Id;
-    if (!info->IsPassive())
-    {
-        applyId = SelectActiveRank(info, RetainLevelLimit(player));
-        if (!applyId)
-            return { 0, "no rank is low enough for this level", false };
-    }
-
-    if (ClassOwnsChain(player, applyId))
+    if (ClassOwnsChain(player, info->Id))
         return { 0, "the current class already knows it", true };
-    if (MarkedRemoved(player, applyId))
+    if (MarkedRemoved(player, info->Id))
         return { 0, "waiting for the previous class spell to finish saving", true };
 
-    return { applyId, {}, false };
+    return { info->Id, {}, false };
 }
 
 uint8 CountKind(RetainContext const& ctx, uint8 classId, uint8 kind)
@@ -1072,10 +1036,7 @@ void Player::ListRetainedSpells(ChatHandler* handler)
                 continue;
             SpellInfo const* info = sSpellMgr->GetSpellInfo(row.SpellId);
             ApplyPlan plan = PlanRetain(this, ctx, row, m_retainActivesSuppressed);
-            if (plan.SpellId && plan.SpellId != row.SpellId)
-                handler->PSendSysMessage("  {} {} slot {} active as {}",
-                    KindName(row.Kind), SpellLabel(info), uint32(row.Slot), plan.SpellId);
-            else if (plan.SpellId)
+            if (plan.SpellId)
                 handler->PSendSysMessage("  {} {} slot {} active",
                     KindName(row.Kind), SpellLabel(info), uint32(row.Slot));
             else
