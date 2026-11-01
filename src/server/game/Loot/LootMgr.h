@@ -159,6 +159,7 @@ struct LootItem
     ConditionList conditions;                               // additional loot condition
     AllowedLooterSet allowedGUIDs;
     ObjectGuid rollWinnerGUID;                              // Stores the guid of person who won loot, if his bags are full only he can see the item in loot list!
+    ObjectGuid personalLooter;                              // If set, only this player can see and take the item
     uint8   count             : 8;
     bool    is_looted         : 1;
     bool    is_blocked        : 1;
@@ -378,6 +379,8 @@ struct Loot
 
     // Inserts the item into the loot (called by LootTemplate processors)
     void AddItem(LootStoreItem const& item);
+    // One player's own corpse loot. It shows in the loot window until that player clicks it.
+    bool AddPersonalItem(Player const* player, uint32 itemId, uint32 count);
 
     LootItem* LootItemInSlot(uint32 lootslot, Player* player, QuestItem** qitem = nullptr, QuestItem** ffaitem = nullptr, QuestItem** conditem = nullptr);
     uint32 GetMaxSlotInLootFor(Player* player) const;

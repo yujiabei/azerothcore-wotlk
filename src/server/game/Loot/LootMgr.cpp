@@ -410,6 +410,7 @@ LootItem::LootItem(LootStoreItem const& li)
     is_underthreshold = false;
     is_counted = false;
     rollWinnerGUID = ObjectGuid::Empty;
+    personalLooter = ObjectGuid::Empty;
     groupid = li.groupid;
 }
 
@@ -418,6 +419,9 @@ bool LootItem::AllowedForPlayer(Player const* player, ObjectGuid source) const
 {
     ItemTemplate const* pProto = sObjectMgr->GetItemTemplate(itemid);
     if (!pProto)
+        return false;
+
+    if (personalLooter && personalLooter != player->GetGUID())
         return false;
 
     if (sDisableMgr->IsDisabledFor(DISABLE_TYPE_LOOT, itemid, nullptr))
@@ -534,6 +538,61 @@ void Loot::AddItem(LootStoreItem const& item)
         if (!item.needs_quest && item.conditions.empty() && !proto->HasFlag(ITEM_FLAG_MULTI_DROP))
             ++unlootedCount;
     }
+}
+
+bool Loot::AddPersonalItem(Player const* player, uint32 itemId, uint32 count)
+{
+    if (!player || !itemId || !count)
+        return false;
+
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+    if (!proto || !proto->GetMaxStackSize())
+        return false;
+
+    bool added = false;
+    while (count && items.size() < MAX_NR_LOOT_ITEMS)
+    {
+        uint32 stack = std::min(count, proto->GetMaxStackSize());
+        if (stack > 255)
+            stack = 255;
+
+        LootItem generated;
+        generated.itemid = itemId;
+        generated.itemIndex = uint32(items.size());
+        generated.randomSuffix = GenerateEnchSuffixFactor(itemId);
+        generated.randomPropertyId = Item::GenerateItemRandomPropertyId(itemId);
+        generated.count = uint8(stack);
+        generated.is_looted = false;
+        generated.is_blocked = false;
+        generated.freeforall = true;
+        generated.is_underthreshold = true;
+        generated.is_counted = false;
+        generated.needs_quest = false;
+        generated.follow_loot_rules = false;
+        generated.groupid = 0;
+        generated.rollWinnerGUID = ObjectGuid::Empty;
+        generated.personalLooter = player->GetGUID();
+
+        uint8 slot = uint8(items.size());
+        items.push_back(generated);
+
+        QuestItemList* list = nullptr;
+        QuestItemMap::iterator itr = PlayerFFAItems.find(player->GetGUID());
+        if (itr == PlayerFFAItems.end())
+        {
+            list = new QuestItemList();
+            PlayerFFAItems[player->GetGUID()] = list;
+        }
+        else
+            list = itr->second;
+
+        list->push_back(QuestItem(slot));
+        ++unlootedCount;
+        count -= stack;
+        added = true;
+    }
+
+    return added;
 }
 
 // Calls processor of corresponding LootTemplate (which handles everything including references)

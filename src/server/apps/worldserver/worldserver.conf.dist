@@ -2916,8 +2916,10 @@ ItemEnhance.Gem.High = 550012
 
 #
 #    ItemEnhance.Drop.*
-#        Description: Every player in the loot group near the kill rolls on their own and the
-#                     stones go straight into the bag, or by mail when the bag is full.
+#        Description: Every player in the loot group near the kill rolls on their own. The stone
+#                     appears on the corpse for that player to click into the bag. A full bag
+#                     leaves it on the corpse. If the corpse loot list is already full, the stone
+#                     goes straight into the bag, or by mail when that bag is full.
 #                     Creatures that are gray to that player give nothing. Chances are in
 #                     percent. Raid bosses, dungeon bosses and world bosses always drop.
 #        Default:     Normal 2% lesser. Elite 20% lesser, 5% greater.

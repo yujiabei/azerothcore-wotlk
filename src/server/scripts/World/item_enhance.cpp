@@ -21,16 +21,18 @@
 #include "CreatureScript.h"
 #include "DatabaseEnv.h"
 #include "Formulas.h"
+#include "GameTime.h"
 #include "Group.h"
 #include "Item.h"
 #include "ItemScript.h"
 #include "Mail.h"
 #include "ObjectMgr.h"
 #include "Player.h"
-#include "PlayerScript.h"
 #include "Random.h"
 #include "ScriptedGossip.h"
 #include "StringFormat.h"
+#include "UnitScript.h"
+#include "World.h"
 #include "WorldScript.h"
 #include "WorldSession.h"
 
@@ -797,22 +799,53 @@ void GiveGems(Player* player, uint32 entry, uint32 count)
     Say(player, "背包已满，强化石已通过邮件送达。");
 }
 
-void RewardMember(Player* member, Creature* killed, std::vector<Drop> const& drops)
+// The corpse was already treated as empty, so its timer was shortened and it may be skinnable.
+// Put the loot sparkle back long enough for the stone to be clicked off the body.
+void RestoreLootableCorpse(Creature* killed)
+{
+    killed->RemoveUnitFlag(UNIT_FLAG_SKINNABLE);
+    killed->SetDynamicFlag(UNIT_DYNFLAG_LOOTABLE);
+
+    float rate = sWorld->getRate(RATE_CORPSE_DECAY_LOOTED);
+    time_t now = GameTime::GetGameTime().count();
+    if (rate < 1.0f && killed->m_corpseRemoveTime > now)
+    {
+        double remain = double(killed->m_corpseRemoveTime - now);
+        time_t diff = time_t(remain * rate / (1.0 - rate) + 0.5);
+        killed->m_corpseRemoveTime += diff;
+        killed->m_respawnTime += diff;
+        return;
+    }
+
+    uint32 delay = killed->GetCorpseDelay();
+    killed->SetCorpseRemoveTime(delay);
+    killed->m_respawnTime += delay;
+}
+
+// Each nearby player rolls separately. A hit is that player's own corpse loot.
+bool RewardMember(Player* member, Creature* killed, std::vector<Drop> const& drops)
 {
     if (!member || !member->GetSession() || member->GetSession()->IsBot())
-        return;
+        return false;
     if (!member->IsAtGroupRewardDistance(killed))
-        return;
+        return false;
     if (killed->GetLevel() <= Acore::XP::GetGrayLevel(member->GetLevel()))
-        return;
+        return false;
 
+    bool placed = false;
     for (Drop const& drop : drops)
     {
         uint32 entry = Cfg().Gem[drop.Tier];
         if (!entry || !drop.Count || !roll_chance_f(drop.Chance))
             continue;
-        GiveGems(member, entry, drop.Count);
+
+        bool canLootCorpse = killed->GetLootMode() > 0 && !killed->IsLootRewardDisabled() && !member->HasPendingBind();
+        if (canLootCorpse && killed->loot.AddPersonalItem(member, entry, drop.Count))
+            placed = true;
+        else
+            GiveGems(member, entry, drop.Count);
     }
+    return placed;
 }
 
 void RewardKill(Creature* killed)
@@ -828,14 +861,20 @@ void RewardKill(Creature* killed)
     if (!boss && killed->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_XP))
         return;
 
+    bool corpseHadNothing = killed->loot.isLooted();
     std::vector<Drop> drops = DropsFor(killed);
+    bool placed = false;
     if (Group* group = killed->GetLootRecipientGroup())
     {
         for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
-            RewardMember(ref->GetSource(), killed, drops);
+            if (RewardMember(ref->GetSource(), killed, drops))
+                placed = true;
     }
-    else
-        RewardMember(killed->GetLootRecipient(), killed, drops);
+    else if (RewardMember(killed->GetLootRecipient(), killed, drops))
+        placed = true;
+
+    if (placed && corpseHadNothing)
+        RestoreLootableCorpse(killed);
 }
 }
 
@@ -906,19 +945,19 @@ public:
     }
 };
 
-class player_enhance_drops : public PlayerScript
+class unit_enhance_drops : public UnitScript
 {
 public:
-    player_enhance_drops() : PlayerScript("player_enhance_drops",
-        { PLAYERHOOK_ON_CREATURE_KILL, PLAYERHOOK_ON_CREATURE_KILLED_BY_PET }) { }
+    unit_enhance_drops() : UnitScript("unit_enhance_drops", true, { UNITHOOK_ON_UNIT_DEATH }) { }
 
-    void OnPlayerCreatureKill(Player* /*killer*/, Creature* killed) override
+    void OnUnitDeath(Unit* unit, Unit* killer) override
     {
-        RewardKill(killed);
-    }
+        Creature* killed = unit ? unit->ToCreature() : nullptr;
+        if (!killed || !killer)
+            return;
+        if (!killer->IsPlayer() && !killer->IsPet() && !killer->IsTotem())
+            return;
 
-    void OnPlayerCreatureKilledByPet(Player* /*petOwner*/, Creature* killed) override
-    {
         RewardKill(killed);
     }
 };
@@ -939,6 +978,6 @@ void AddSC_item_enhance()
 {
     new item_enhance_gem();
     new npc_enhance_master();
-    new player_enhance_drops();
+    new unit_enhance_drops();
     new world_enhance_config();
 }
