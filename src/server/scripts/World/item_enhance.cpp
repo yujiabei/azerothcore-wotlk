@@ -806,20 +806,23 @@ void RestoreLootableCorpse(Creature* killed)
     killed->RemoveUnitFlag(UNIT_FLAG_SKINNABLE);
     killed->SetDynamicFlag(UNIT_DYNFLAG_LOOTABLE);
 
+    uint32 delay = killed->GetCorpseDelay();
     float rate = sWorld->getRate(RATE_CORPSE_DECAY_LOOTED);
     time_t now = GameTime::GetGameTime().count();
-    if (rate < 1.0f && killed->m_corpseRemoveTime > now)
-    {
-        double remain = double(killed->m_corpseRemoveTime - now);
-        time_t diff = time_t(remain * rate / (1.0 - rate) + 0.5);
-        killed->m_corpseRemoveTime += diff;
-        killed->m_respawnTime += diff;
-        return;
-    }
-
-    uint32 delay = killed->GetCorpseDelay();
+    time_t respawnAt = killed->GetRespawnTime();
     killed->SetCorpseRemoveTime(delay);
-    killed->m_respawnTime += delay;
+
+    if (respawnAt <= now)
+        return;
+
+    uint32 added = 0;
+    if (rate > 0.0f && rate < 1.0f)
+        added = uint32(double(delay) * rate + 0.5);
+    else if (rate >= 1.0f)
+        added = delay;
+
+    if (added)
+        killed->SetRespawnTime(uint32(respawnAt - now) + added);
 }
 
 // Each nearby player rolls separately. A hit is that player's own corpse loot.
