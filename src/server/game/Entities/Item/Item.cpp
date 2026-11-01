@@ -17,6 +17,7 @@
 
 #include "Item.h"
 #include "Common.h"
+#include "Config.h"
 #include "DatabaseEnv.h"
 #include "GameTime.h"
 #include "ItemEnchantmentMgr.h"
@@ -939,6 +940,45 @@ void Item::SetEnchantment(EnchantmentSlot slot, uint32 id, uint32 duration, uint
     SetUInt32Value(ITEM_FIELD_ENCHANTMENT_1_1 + slot * MAX_ENCHANTMENT_OFFSET + ENCHANTMENT_CHARGES_OFFSET, charges);
     SetState(ITEM_CHANGED, owner);
 }
+
+uint32 Item::GetEnhanceLevel() const
+{
+    uint32 id = GetEnchantmentId(ENHANCE_ENCHANTMENT_SLOT);
+    if (id <= ITEM_ENHANCE_ENCHANT_BASE || id > ITEM_ENHANCE_ENCHANT_BASE + ITEM_ENHANCE_MAX_LEVEL)
+        return 0;
+    return id - ITEM_ENHANCE_ENCHANT_BASE;
+}
+
+bool Item::CanHoldEnhance() const
+{
+    return !GetEnchantmentId(ENHANCE_ENCHANTMENT_SLOT) || GetEnhanceLevel();
+}
+
+void Item::SetEnhanceLevel(uint32 level)
+{
+    if (level > ITEM_ENHANCE_MAX_LEVEL)
+        level = ITEM_ENHANCE_MAX_LEVEL;
+    SetEnchantment(ENHANCE_ENCHANTMENT_SLOT, level ? ITEM_ENHANCE_ENCHANT_BASE + level : 0, 0, 0);
+}
+
+uint32 Item::GetEnhanceBonusPct(uint32 level)
+{
+    static uint32 const base = sConfigMgr->GetOption<uint32>("ItemEnhance.StatPct.Base", 2);
+    static uint32 const step = sConfigMgr->GetOption<uint32>("ItemEnhance.StatPct.StepPer10", 1);
+
+    // Levels 1-10 give base each, 11-20 give base + step each, and so on.
+    uint64 tens = level / 10;
+    uint64 rest = level % 10;
+    uint64 ramp = tens ? tens * (tens - 1) / 2 : 0;
+    uint64 pct = 10 * base * tens + 10 * step * ramp + rest * (base + step * tens);
+    return uint32(std::min<uint64>(pct, 100000000));
+}
+
+float Item::GetEnhanceMultiplier(uint32 level)
+{
+    return 1.0f + float(GetEnhanceBonusPct(level)) / 100.0f;
+}
+
 void Item::SetEnchantmentDuration(EnchantmentSlot slot, uint32 duration, Player* owner)
 {
     if (GetEnchantmentDuration(slot) == duration)
