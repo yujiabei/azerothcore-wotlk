@@ -2816,6 +2816,142 @@ Multiclass.MentorItemEntry = 550001
 ###################################################################################################
 
 ###################################################################################################
+# ITEM ENHANCEMENT
+#
+#    ItemEnhance.Enable
+#        Description: Weapons and armor can be enhanced to +1, +2, ... with no cap.
+#                     Right-click an enhancement stone, or talk to the enhancement master,
+#                     to enhance worn gear, exchange stones, move a level to another item,
+#                     or see the top list. Bots cannot use it and do not get stones.
+#        Default:     1 - (Enabled)
+#                     0 - (Disabled)
+
+ItemEnhance.Enable = 1
+
+#
+#    ItemEnhance.StatPct.Base
+#    ItemEnhance.StatPct.StepPer10
+#        Description: Each level adds Base percent to the item's own stats, armor, block,
+#                     resistances and weapon damage. Every ten levels, each further level
+#                     adds StepPer10 more. With 2 and 1: +10 = 20%, +15 = 35%, +20 = 50%,
+#                     +30 = 90%. Gems, enchants, set bonuses and procs are not scaled.
+#                     Read once at startup. Restart the server after changing them.
+#        Default:     2, 1
+
+ItemEnhance.StatPct.Base = 2
+ItemEnhance.StatPct.StepPer10 = 1
+
+#
+#    ItemEnhance.Chance.SafeLevel
+#    ItemEnhance.Chance.Base
+#    ItemEnhance.Chance.Decay
+#    ItemEnhance.Chance.Floor
+#        Description: Reaching +SafeLevel or lower always succeeds. Above it the chance in
+#                     percent is max(Floor, Base * Decay ^ (target - SafeLevel - 1)).
+#                     Defaults give +4 90%, +7 75%, +10 62%, +15 46%, +20 33%, +22 and up 30%.
+#        Default:     3, 90, 0.94, 30
+
+ItemEnhance.Chance.SafeLevel = 3
+ItemEnhance.Chance.Base = 90
+ItemEnhance.Chance.Decay = 0.94
+ItemEnhance.Chance.Floor = 30
+
+#
+#    ItemEnhance.Cost.LowUntil
+#    ItemEnhance.Cost.MidUntil
+#    ItemEnhance.Cost.HighStep
+#        Description: One attempt costs 1 lesser stone up to +LowUntil, 1 greater stone up
+#                     to +MidUntil, then superior stones: 1 more every HighStep levels.
+#                     Defaults: +1-5 1 lesser, +6-10 1 greater, +11-20 1 superior,
+#                     +21-30 2 superior, +31-40 3 superior.
+#        Default:     5, 10, 10
+
+ItemEnhance.Cost.LowUntil = 5
+ItemEnhance.Cost.MidUntil = 10
+ItemEnhance.Cost.HighStep = 10
+
+#
+#    ItemEnhance.Fail.KeepUntil
+#    ItemEnhance.Fail.AnchorFrom
+#    ItemEnhance.Fail.AnchorStep
+#        Description: A failed attempt at +KeepUntil or lower keeps the level. Above that it
+#                     loses one level, but from +AnchorFrom on it never drops below the last
+#                     anchor (AnchorFrom, AnchorFrom + AnchorStep, ...). Items never break.
+#                     AnchorStep 0 turns anchors off.
+#        Default:     7, 10, 5
+
+ItemEnhance.Fail.KeepUntil = 7
+ItemEnhance.Fail.AnchorFrom = 10
+ItemEnhance.Fail.AnchorStep = 5
+
+#
+#    ItemEnhance.Exchange.Rate
+#        Description: Stones of one tier that make one stone of the next tier. Exchange
+#                     works both ways at the same rate.
+#        Default:     5
+
+ItemEnhance.Exchange.Rate = 5
+
+#
+#    ItemEnhance.Transfer.MidPerLevel
+#        Description: Greater stones per level to move an enhancement from a worn item to
+#                     a bag item of the same kind. The worn item drops to +0.
+#        Default:     1
+
+ItemEnhance.Transfer.MidPerLevel = 1
+
+#
+#    ItemEnhance.Announce.MinLevel
+#        Description: A success at this level or higher is announced to the whole server.
+#        Default:     15
+#                     0 - (Disabled)
+
+ItemEnhance.Announce.MinLevel = 15
+
+#
+#    ItemEnhance.NpcEntry
+#    ItemEnhance.Gem.Low
+#    ItemEnhance.Gem.Mid
+#    ItemEnhance.Gem.High
+#        Description: creature_template entry of the enhancement master and item_template
+#                     entries of the three stones. The pending world SQL inserts them. There
+#                     is no default spawn. Summon with: .npc add 550002
+#        Default:     550002, 550010, 550011, 550012
+
+ItemEnhance.NpcEntry = 550002
+ItemEnhance.Gem.Low = 550010
+ItemEnhance.Gem.Mid = 550011
+ItemEnhance.Gem.High = 550012
+
+#
+#    ItemEnhance.Drop.*
+#        Description: Every player in the loot group near the kill rolls on their own and the
+#                     stones go straight into the bag, or by mail when the bag is full.
+#                     Creatures that are gray to that player give nothing. Chances are in
+#                     percent. Raid bosses, dungeon bosses and world bosses always drop.
+#        Default:     Normal 2% lesser. Elite 20% lesser, 5% greater.
+#                     Rare 1 lesser, 30% greater. Dungeon boss 1 greater, 10% superior.
+#                     Heroic dungeon boss 2 greater, 20% superior.
+#                     Raid boss 1 superior (10-man) or 2 (25-man). World boss 3 superior.
+
+ItemEnhance.Drop.Enable = 1
+ItemEnhance.Drop.Normal.LowChance = 2
+ItemEnhance.Drop.Elite.LowChance = 20
+ItemEnhance.Drop.Elite.MidChance = 5
+ItemEnhance.Drop.Rare.LowCount = 1
+ItemEnhance.Drop.Rare.MidChance = 30
+ItemEnhance.Drop.DungeonBoss.MidCount = 1
+ItemEnhance.Drop.DungeonBoss.HighChance = 10
+ItemEnhance.Drop.HeroicBoss.MidCount = 2
+ItemEnhance.Drop.HeroicBoss.HighChance = 20
+ItemEnhance.Drop.Raid10Boss.HighCount = 1
+ItemEnhance.Drop.Raid25Boss.HighCount = 2
+ItemEnhance.Drop.WorldBoss.HighCount = 3
+
+#
+###################################################################################################
+
+###################################################################################################
 # EXPERIENCE
 #
 #    MaxGroupXPDistance

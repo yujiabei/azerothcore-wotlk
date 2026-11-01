@@ -776,6 +776,13 @@ void CharacterDatabaseConnection::DoPrepareStatements()
         "SELECT class, level, talent_bonus FROM character_class_progress WHERE guid = ?", CONNECTION_BOTH);
     PrepareStatement(CHAR_UPD_CLASS_TALENT_BONUS,
         "UPDATE character_class_progress SET talent_bonus = ? WHERE guid = ? AND class = ?", CONNECTION_BOTH);
+    // The 34th token of item_instance.enchantments is the enchant id in slot 11, which holds the enhancement.
+    PrepareStatement(CHAR_SEL_ITEM_ENHANCE_TOP,
+        "SELECT c.name, ii.itemEntry, e.enchant FROM ("
+        "SELECT guid, CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(enchantments, ' ', 34), ' ', -1) AS UNSIGNED) AS enchant "
+        "FROM item_instance) e "
+        "JOIN item_instance ii ON ii.guid = e.guid JOIN characters c ON c.guid = ii.owner_guid "
+        "WHERE e.enchant > ? AND e.enchant <= ? ORDER BY e.enchant DESC LIMIT ?", CONNECTION_SYNCH);
 }
 
 CharacterDatabaseConnection::CharacterDatabaseConnection(MySQLConnectionInfo& connInfo) : MySQLConnection(connInfo)

@@ -183,6 +183,14 @@ enum EnchantmentSlot : uint8
     MAX_ENCHANTMENT_SLOT            = 12
 };
 
+// The enhancement level is stored as enchant id ITEM_ENHANCE_ENCHANT_BASE + level in the last
+// random property slot. No ItemRandomProperties row uses that slot, and one ItemRandomSuffix row does,
+// so an item whose slot already holds another enchant cannot be enhanced.
+// The client patch adds tooltip-only SpellItemEnchantment rows for these ids. The server has none.
+constexpr EnchantmentSlot ENHANCE_ENCHANTMENT_SLOT = PROP_ENCHANTMENT_SLOT_4;
+constexpr uint32 ITEM_ENHANCE_ENCHANT_BASE = 30000;
+constexpr uint32 ITEM_ENHANCE_MAX_LEVEL = 1000000;
+
 #define MAX_VISIBLE_ITEM_OFFSET       2                     // 2 fields per visible item (entry+enchantment)
 
 #define MAX_GEM_SOCKETS               MAX_ITEM_PROTO_SOCKETS// (BONUS_ENCHANTMENT_SLOT-SOCK_ENCHANTMENT_SLOT) and item proto size, equal value expected
@@ -304,6 +312,14 @@ public:
     [[nodiscard]] uint32 GetEnchantmentId(EnchantmentSlot slot)       const { return GetUInt32Value(ITEM_FIELD_ENCHANTMENT_1_1 + slot * MAX_ENCHANTMENT_OFFSET + ENCHANTMENT_ID_OFFSET);}
     [[nodiscard]] uint32 GetEnchantmentDuration(EnchantmentSlot slot) const { return GetUInt32Value(ITEM_FIELD_ENCHANTMENT_1_1 + slot * MAX_ENCHANTMENT_OFFSET + ENCHANTMENT_DURATION_OFFSET);}
     [[nodiscard]] uint32 GetEnchantmentCharges(EnchantmentSlot slot)  const { return GetUInt32Value(ITEM_FIELD_ENCHANTMENT_1_1 + slot * MAX_ENCHANTMENT_OFFSET + ENCHANTMENT_CHARGES_OFFSET);}
+
+    [[nodiscard]] uint32 GetEnhanceLevel() const;
+    [[nodiscard]] bool CanHoldEnhance() const;
+    // Equipped items must go through Player::SetItemEnhanceLevel so the stat bonus is reapplied.
+    void SetEnhanceLevel(uint32 level);
+    // Read once at startup. Applying and removing an item must use the same value.
+    [[nodiscard]] static float GetEnhanceMultiplier(uint32 level);
+    [[nodiscard]] static uint32 GetEnhanceBonusPct(uint32 level);
 
     [[nodiscard]] std::string const& GetText() const { return m_text; }
     void SetText(std::string const& text) { m_text = text; }

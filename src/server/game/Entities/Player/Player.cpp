@@ -7304,7 +7304,7 @@ void Player::_ApplyItemMods(Item* item, uint8 slot, bool apply)
     if (item->HasSocket())                              //only (un)equipping of items with sockets can influence metagems, so no need to waste time with normal items
         CorrectMetaGemEnchants(slot, apply);
 
-    _ApplyItemBonuses(proto, slot, apply);
+    _ApplyItemBonuses(item, slot, apply);
 
     if (slot == EQUIPMENT_SLOT_RANGED)
         _ApplyAmmoBonuses();
@@ -7322,10 +7322,32 @@ void Player::_ApplyItemMods(Item* item, uint8 slot, bool apply)
     LOG_DEBUG("entities.player.items", "_ApplyItemMods complete.");
 }
 
-void Player::_ApplyItemBonuses(ItemTemplate const* proto, uint8 slot, bool apply, bool only_level_scale /*= false*/)
+void Player::SetItemEnhanceLevel(Item* item, uint32 level)
 {
+    if (!item || item->GetEnhanceLevel() == level)
+        return;
+
+    bool const equipped = item->IsEquipped() && item->GetOwnerGUID() == GetGUID();
+    if (equipped)
+        _ApplyItemMods(item, item->GetSlot(), false);
+
+    item->SetEnhanceLevel(level);
+
+    if (equipped)
+        _ApplyItemMods(item, item->GetSlot(), true);
+}
+
+void Player::_ApplyItemBonuses(Item const* item, uint8 slot, bool apply, bool only_level_scale /*= false*/)
+{
+    ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
     if (slot >= INVENTORY_SLOT_BAG_END || !proto)
         return;
+
+    float const enhance = Item::GetEnhanceMultiplier(item->GetEnhanceLevel());
+    auto enhanced = [enhance](int32 value)
+    {
+        return value > 0 ? int32(float(value) * enhance + 0.5f) : value;
+    };
 
     ScalingStatDistributionEntry const* ssd = proto->ScalingStatDistribution ? sScalingStatDistributionStore.LookupEntry(proto->ScalingStatDistribution) : nullptr;
     if (only_level_scale && !ssd)
@@ -7381,6 +7403,7 @@ void Player::_ApplyItemBonuses(ItemTemplate const* proto, uint8 slot, bool apply
             sScriptMgr->OnPlayerApplyItemModsBefore(this, slot, apply, i, statType, val);
         }
 
+        val = enhanced(val);
         if (val == 0)
             continue;
 
@@ -7539,7 +7562,7 @@ void Player::_ApplyItemBonuses(ItemTemplate const* proto, uint8 slot, bool apply
     // Apply Spell Power from ScalingStatValue if set
     if (ssv)
         if (int32 spellbonus = ssv->getSpellBonus(ScalingStatValue))
-            ApplySpellPowerBonus(spellbonus, apply);
+            ApplySpellPowerBonus(enhanced(spellbonus), apply);
 
     // If set ScalingStatValue armor get it or use item armor
     uint32 armor = proto->Armor;
@@ -7552,6 +7575,7 @@ void Player::_ApplyItemBonuses(ItemTemplate const* proto, uint8 slot, bool apply
     else if (armor && proto->ArmorDamageModifier)
         armor -= uint32(proto->ArmorDamageModifier);
 
+    armor = uint32(enhanced(int32(armor)));
     if (armor)
     {
         UnitModifierFlatType modType = TOTAL_VALUE;
@@ -7573,33 +7597,33 @@ void Player::_ApplyItemBonuses(ItemTemplate const* proto, uint8 slot, bool apply
 
     // Add armor bonus from ArmorDamageModifier if > 0
     if (proto->ArmorDamageModifier > 0 && sScriptMgr->OnPlayerCanArmorDamageModifier(this))
-        HandleStatFlatModifier(UNIT_MOD_ARMOR, TOTAL_VALUE, float(proto->ArmorDamageModifier), apply);
+        HandleStatFlatModifier(UNIT_MOD_ARMOR, TOTAL_VALUE, proto->ArmorDamageModifier * enhance, apply);
 
     if (proto->Block)
-        HandleBaseModFlatValue(SHIELD_BLOCK_VALUE, float(proto->Block), apply);
+        HandleBaseModFlatValue(SHIELD_BLOCK_VALUE, float(enhanced(int32(proto->Block))), apply);
 
     if (proto->HolyRes)
-        HandleStatFlatModifier(UNIT_MOD_RESISTANCE_HOLY, BASE_VALUE, float(proto->HolyRes), apply);
+        HandleStatFlatModifier(UNIT_MOD_RESISTANCE_HOLY, BASE_VALUE, float(enhanced(proto->HolyRes)), apply);
 
     if (proto->FireRes)
-        HandleStatFlatModifier(UNIT_MOD_RESISTANCE_FIRE, BASE_VALUE, float(proto->FireRes), apply);
+        HandleStatFlatModifier(UNIT_MOD_RESISTANCE_FIRE, BASE_VALUE, float(enhanced(proto->FireRes)), apply);
 
     if (proto->NatureRes)
-        HandleStatFlatModifier(UNIT_MOD_RESISTANCE_NATURE, BASE_VALUE, float(proto->NatureRes), apply);
+        HandleStatFlatModifier(UNIT_MOD_RESISTANCE_NATURE, BASE_VALUE, float(enhanced(proto->NatureRes)), apply);
 
     if (proto->FrostRes)
-        HandleStatFlatModifier(UNIT_MOD_RESISTANCE_FROST, BASE_VALUE, float(proto->FrostRes), apply);
+        HandleStatFlatModifier(UNIT_MOD_RESISTANCE_FROST, BASE_VALUE, float(enhanced(proto->FrostRes)), apply);
 
     if (proto->ShadowRes)
-        HandleStatFlatModifier(UNIT_MOD_RESISTANCE_SHADOW, BASE_VALUE, float(proto->ShadowRes), apply);
+        HandleStatFlatModifier(UNIT_MOD_RESISTANCE_SHADOW, BASE_VALUE, float(enhanced(proto->ShadowRes)), apply);
 
     if (proto->ArcaneRes)
-        HandleStatFlatModifier(UNIT_MOD_RESISTANCE_ARCANE, BASE_VALUE, float(proto->ArcaneRes), apply);
+        HandleStatFlatModifier(UNIT_MOD_RESISTANCE_ARCANE, BASE_VALUE, float(enhanced(proto->ArcaneRes)), apply);
 
     WeaponAttackType attType = Player::GetAttackBySlot(slot);
     if (attType != MAX_ATTACK)
     {
-        _ApplyWeaponDamage(slot, proto, ssv, apply);
+        _ApplyWeaponDamage(slot, item, ssv, apply);
     }
 
     // Druids get feral AP bonus from weapon dps (also use DPS from ScalingStatValue)
@@ -7615,13 +7639,19 @@ void Player::_ApplyItemBonuses(ItemTemplate const* proto, uint8 slot, bool apply
 
         feral_bonus += proto->getFeralBonus(dpsMod);
         sScriptMgr->OnPlayerGetFeralApBonus(this, feral_bonus, dpsMod, proto, ssv);
+        feral_bonus = enhanced(feral_bonus);
         if (feral_bonus)
             ApplyFeralAPBonus(feral_bonus, apply);
     }
 }
 
-void Player::_ApplyWeaponDamage(uint8 slot, ItemTemplate const* proto, ScalingStatValuesEntry const* ssv, bool apply)
+void Player::_ApplyWeaponDamage(uint8 slot, Item const* item, ScalingStatValuesEntry const* ssv, bool apply)
 {
+    ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+    if (!proto)
+        return;
+
+    float const enhance = Item::GetEnhanceMultiplier(item->GetEnhanceLevel());
     uint32 CustomScalingStatValue = 0;
 
     sScriptMgr->OnPlayerCustomScalingStatValueBefore(this, proto, slot, apply, CustomScalingStatValue);
@@ -7667,6 +7697,9 @@ void Player::_ApplyWeaponDamage(uint8 slot, ItemTemplate const* proto, ScalingSt
                 maxDamage = (1.0f + mod) * average;
             }
         }
+
+        minDamage *= enhance;
+        maxDamage *= enhance;
 
         if (apply)
         {
@@ -8300,7 +8333,7 @@ void Player::_RemoveAllItemMods()
                 continue;
 
             ApplyItemDependentAuras(m_items[i], false);
-            _ApplyItemBonuses(proto, i, false);
+            _ApplyItemBonuses(m_items[i], i, false);
 
             if (i == EQUIPMENT_SLOT_RANGED)
                 _ApplyAmmoBonuses();
@@ -8326,7 +8359,7 @@ void Player::_ApplyAllItemMods()
                 continue;
 
             ApplyItemDependentAuras(m_items[i], true);
-            _ApplyItemBonuses(proto, i, true);
+            _ApplyItemBonuses(m_items[i], i, true);
 
             WeaponAttackType const attackType = Player::GetAttackBySlot(i);
             if (attackType != MAX_ATTACK)
