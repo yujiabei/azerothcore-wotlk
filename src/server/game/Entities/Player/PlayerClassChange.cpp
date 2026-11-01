@@ -1394,6 +1394,22 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
     for (auto const& itr : m_spells)
         if (itr.second && itr.second->State != PLAYERSPELL_REMOVED && itr.second->State != PLAYERSPELL_NEW)
             spellsFromDb.insert(itr.first);
+    // _LoadSpells skips rows whose skill is invalid for the loaded class and leaves them in
+    // character_spell, e.g. old class talent ranks kept with specMask 0. They are not in m_spells.
+    std::unordered_set<uint32> hiddenSpellRows;
+    {
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHARACTER_SPELL);
+        stmt->SetData(0, guid);
+        if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
+        {
+            do
+            {
+                uint32 spellId = result->Fetch()[0].Get<uint32>();
+                if (!m_spells.contains(spellId))
+                    hiddenSpellRows.insert(spellId);
+            } while (result->NextRow());
+        }
+    }
     std::unordered_set<uint32> talentsFromDb;
     for (auto const& itr : m_talents)
         if (itr.second && itr.second->State != PLAYERSPELL_REMOVED && itr.second->State != PLAYERSPELL_NEW)
@@ -1608,6 +1624,10 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
     for (auto& itr : m_talents)
         if (itr.second && itr.second->State == PLAYERSPELL_UNCHANGED && !talentsFromDb.contains(itr.first))
             itr.second->State = PLAYERSPELL_NEW;
+    // A plain insert would hit the primary key of a hidden row. CHANGED deletes it first.
+    for (auto& itr : m_spells)
+        if (itr.second && itr.second->State == PLAYERSPELL_NEW && hiddenSpellRows.contains(itr.first))
+            itr.second->State = PLAYERSPELL_CHANGED;
 
     uint32 liveSpells = 0;
     for (auto const& itr : m_spells)
