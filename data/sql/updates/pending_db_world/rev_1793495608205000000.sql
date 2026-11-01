@@ -3,6 +3,7 @@
 -- The script opens the enhancement menu and does not cast it.
 -- Flags 8388672 = ITEM_FLAG_PLAYERCAST | ITEM_FLAG_USE_WHEN_SHAPESHIFTED.
 -- Displays: 35403 Large Brilliant Shard, 56459 Dream Shard, 56465 Abyss Crystal.
+-- The client needs matching Item.dbc rows or it shows a question mark.
 -- item_template is replaced in place. The SQL linter rejects DELETE on that table.
 
 REPLACE INTO `item_template` (

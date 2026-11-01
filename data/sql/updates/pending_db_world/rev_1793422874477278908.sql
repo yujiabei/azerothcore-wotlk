@@ -7,6 +7,7 @@
 -- it. Casting it would run the Spawn effect. Combat is refused in the script.
 -- Give one with: .additem 550001
 -- Flags 8388672 = ITEM_FLAG_PLAYERCAST | ITEM_FLAG_USE_WHEN_SHAPESHIFTED.
+-- Display 1317 is INV_Misc_Book_11. The client needs a matching Item.dbc row or it shows a question mark.
 -- item_template is replaced in place. The SQL linter rejects DELETE on that table.
 
 REPLACE INTO `item_template` (
@@ -16,7 +17,7 @@ REPLACE INTO `item_template` (
   `spellcategorycooldown_1`, `bonding`, `description`, `Material`, `ScriptName`,
   `RequiredDisenchantSkill`, `area`, `Map`, `VerifiedBuild`)
 VALUES (
-  550001, 15, 0, -1, 'Class Mentor Token', 54562, 3, 8388672, 0, -1, -1, 1, 0, 1, 1,
+  550001, 15, 0, -1, 'Class Mentor Token', 1317, 3, 8388672, 0, -1, -1, 1, 0, 1, 1,
   836, 0, 0, 0, -1, 1,
   'Right-click to open the class mentor menu. Usable in instances. Not usable in combat.',
   -1, 'item_class_mentor', -1, 0, 0, 12340);
