@@ -1793,7 +1793,7 @@ public:
     void CachePlayerbotFlag();
     [[nodiscard]] bool GainsMulticlassXpBonus() const;
     uint32 ClaimClassDailyBonus();
-    // Removes the previous class mastery aura, then applies the weapon-skill floor and the new aura.
+    // Removes the previous class mastery aura, then keeps the highest weapon skill and applies the new aura.
     void ApplyMulticlassClassEnter(uint8 oldClass);
     [[nodiscard]] bool MeetsRidingLevelRequirement(SpellInfo const* spell) const;
     void LearnCustomSpells();
@@ -3080,11 +3080,14 @@ private:
     bool m_isPlayerbot;
     // Unix time when the class being played reached the server level cap. 0 if it has not.
     uint32 m_classMasteredAt;
-    // Highest weapon-skill value stored for every class except the one being played.
+    // Highest weapon-skill value stored for any class, including the one being played.
     std::unordered_map<uint32, uint16> m_otherClassWeaponSkill;
 
     void LoadOtherClassWeaponSkills();
     void ApplyWeaponSkillFloor();
+    // Keeps the highest stored value. A lower write does not replace it.
+    void RememberWeaponSkillMax(uint32 skillId, uint16 value);
+    void AppendWeaponSkillMax(CharacterDatabaseTransaction trans);
     // Other classes' saved levels / 3, capped. Runs on login and after a class change.
     void RefreshMulticlassBonusTalents();
     [[nodiscard]] uint32 CountSpecTalentPoints(uint8 spec) const;

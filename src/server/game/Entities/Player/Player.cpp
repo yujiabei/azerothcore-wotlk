@@ -2831,12 +2831,51 @@ void Player::RetroactiveClassMastery()
         MarkClassMastered(getClass(), GetLevel());
 }
 
+void Player::RememberWeaponSkillMax(uint32 skillId, uint16 value)
+{
+    if (!skillId || !value || m_isPlayerbot || (GetSession() && GetSession()->IsBot()))
+        return;
+
+    CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_REP_CLASS_SKILL_MAX);
+    stmt->SetData(0, GetGUID().GetCounter());
+    stmt->SetData(1, getClass());
+    stmt->SetData(2, uint16(skillId));
+    stmt->SetData(3, value);
+    stmt->SetData(4, value);
+    CharacterDatabase.DirectExecute(stmt);
+}
+
+void Player::AppendWeaponSkillMax(CharacterDatabaseTransaction trans)
+{
+    if (!trans || m_isPlayerbot || (GetSession() && GetSession()->IsBot()))
+        return;
+
+    for (auto const& skill : m_otherClassWeaponSkill)
+    {
+        if (!skill.second)
+            continue;
+
+        SkillRaceClassInfoEntry const* rc = GetSkillRaceClassInfo(skill.first, getRace(), getClass());
+        if (!rc || GetSkillRangeType(rc) != SKILL_RANGE_LEVEL)
+            continue;
+
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_REP_CLASS_SKILL_MAX);
+        stmt->SetData(0, GetGUID().GetCounter());
+        stmt->SetData(1, getClass());
+        stmt->SetData(2, uint16(skill.first));
+        stmt->SetData(3, skill.second);
+        stmt->SetData(4, skill.second);
+        trans->Append(stmt);
+    }
+}
+
 void Player::LoadOtherClassWeaponSkills()
 {
     m_otherClassWeaponSkill.clear();
     if (m_isPlayerbot)
         return;
 
+    std::unordered_map<uint32, uint16> stored;
     CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_SKILLS_BY_GUID);
     stmt->SetData(0, GetGUID().GetCounter());
     if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
@@ -2844,19 +2883,34 @@ void Player::LoadOtherClassWeaponSkills()
         do
         {
             Field* fields = result->Fetch();
-            if (fields[0].Get<uint8>() == getClass())
-                continue;
-
             uint32 skillId = fields[1].Get<uint16>();
             SkillLineEntry const* skill = sSkillLineStore.LookupEntry(skillId);
             if (!skill || skill->categoryId != SKILL_CATEGORY_WEAPON)
                 continue;
 
             uint16 value = fields[2].Get<uint16>();
-            uint16& highest = m_otherClassWeaponSkill[skillId];
+            uint16& highest = stored[skillId];
             if (value > highest)
                 highest = value;
         } while (result->NextRow());
+    }
+
+    m_otherClassWeaponSkill = stored;
+    for (auto const& itr : mSkillStatus)
+    {
+        if (itr.second.uState == SKILL_DELETED)
+            continue;
+
+        SkillLineEntry const* skill = sSkillLineStore.LookupEntry(itr.first);
+        if (!skill || skill->categoryId != SKILL_CATEGORY_WEAPON)
+            continue;
+
+        uint16 live = GetPureSkillValue(itr.first);
+        uint16& highest = m_otherClassWeaponSkill[itr.first];
+        if (live > highest)
+            highest = live;
+        if (live > stored[itr.first])
+            RememberWeaponSkillMax(itr.first, live);
     }
 }
 
@@ -2865,12 +2919,10 @@ void Player::ApplyWeaponSkillFloor()
     if (m_isPlayerbot)
         return;
 
-    float ratio = sConfigMgr->GetOption<float>("Multiclass.WeaponSkillInheritRatio", 0.5f);
-    if (ratio <= 0.f || m_otherClassWeaponSkill.empty())
-        return;
+    LoadOtherClassWeaponSkills();
 
     uint16 cap = GetMaxSkillValueForLevel();
-    if (!cap)
+    if (!cap || m_otherClassWeaponSkill.empty())
         return;
 
     for (auto const& other : m_otherClassWeaponSkill)
@@ -2883,15 +2935,12 @@ void Player::ApplyWeaponSkillFloor()
         if (!rc || GetSkillRangeType(rc) != SKILL_RANGE_LEVEL)
             continue;
 
-        uint32 inherited = uint32(std::floor(double(other.second) * double(ratio)));
-        if (inherited > cap)
-            inherited = cap;
-        if (!inherited)
-            continue;
-
+        uint16 applied = other.second > cap ? cap : other.second;
         bool known = HasSkill(skillId);
         uint16 current = known ? GetPureSkillValue(skillId) : 0;
-        if (current >= inherited)
+        if (current == applied)
+            continue;
+        if (current > applied && current <= cap)
             continue;
 
         uint16 maxValue = cap;
@@ -2901,11 +2950,13 @@ void Player::ApplyWeaponSkillFloor()
             if (existingMax > maxValue)
                 maxValue = existingMax;
         }
-        if (inherited > maxValue)
-            inherited = maxValue;
+        if (applied > maxValue)
+            applied = maxValue;
+        if (!applied || applied == current)
+            continue;
 
         uint16 step = known ? GetSkillStep(uint16(skillId)) : 0;
-        SetSkill(uint16(skillId), step, uint16(inherited), maxValue);
+        SetSkill(uint16(skillId), step, applied, maxValue);
     }
 }
 
@@ -2917,7 +2968,6 @@ void Player::ApplyMulticlassClassEnter(uint8 oldClass)
     if (oldClass != getClass())
         RemoveMasteryAura(oldClass);
 
-    LoadOtherClassWeaponSkills();
     ApplyWeaponSkillFloor();
     LoadClassMastery();
     ApplyMasteryAura();
@@ -14593,6 +14643,10 @@ void Player::_LoadSkills(PreparedQueryResult result)
             {
                 LOG_ERROR("entities.player", "Player {} (GUID: {}), has skill ({}) that is invalid for the race/class combination (Race: {}, Class: {}). Will be deleted.",
                     GetName(), GetGUID().GetCounter(), skill, getRace(), getClass());
+
+                SkillLineEntry const* skillLine = sSkillLineStore.LookupEntry(skill);
+                if (skillLine && skillLine->categoryId == SKILL_CATEGORY_WEAPON && value)
+                    RememberWeaponSkillMax(skill, value);
 
                 // Mark skill for deletion in the database
                 mSkillStatus.insert(SkillStatusMap::value_type(skill, SkillStatusData(0, SKILL_DELETED)));

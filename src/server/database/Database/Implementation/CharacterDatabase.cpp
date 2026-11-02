@@ -694,6 +694,10 @@ void CharacterDatabaseConnection::DoPrepareStatements()
     PrepareStatement(CHAR_DEL_CLASS_SKILL_BY_CLASS, "DELETE FROM character_class_skill WHERE guid = ? AND class = ?", CONNECTION_BOTH);
     PrepareStatement(CHAR_INS_CLASS_SKILL,
         "INSERT INTO character_class_skill (guid, class, skill, value, max) VALUES (?, ?, ?, ?, ?)", CONNECTION_BOTH);
+    PrepareStatement(CHAR_REP_CLASS_SKILL_MAX,
+        "INSERT INTO character_class_skill (guid, class, skill, `value`, `max`) VALUES (?, ?, ?, ?, ?) AS incoming "
+        "ON DUPLICATE KEY UPDATE `value` = GREATEST(character_class_skill.`value`, incoming.`value`), "
+        "`max` = GREATEST(character_class_skill.`max`, incoming.`max`)", CONNECTION_BOTH);
     PrepareStatement(CHAR_SEL_CLASS_SKILL,
         "SELECT skill, value, max FROM character_class_skill WHERE guid = ? AND class = ?", CONNECTION_BOTH);
     PrepareStatement(CHAR_DEL_CLASS_QUEST_BY_CLASS, "DELETE FROM character_class_quest WHERE guid = ? AND class = ?", CONNECTION_BOTH);

@@ -2344,10 +2344,11 @@ Achievement.RealmFirstRaceLimitOnePerCharacter = 1
 #
 #    MaxPrimaryTradeSkill
 #        Description: Maximum number of primary professions a character can learn.
+#                     11 is every primary profession. Login gives back the unused slots.
 #        Range:       0-11
-#        Default:     2
+#        Default:     11
 
-MaxPrimaryTradeSkill = 2
+MaxPrimaryTradeSkill = 11
 
 #
 #    SkillChance.Prospecting
@@ -2686,15 +2687,9 @@ Multiclass.MasteryAura.Warlock = 0
 Multiclass.MasteryAura.Druid = 0
 
 #
-#    Multiclass.WeaponSkillInheritRatio
-#        Description: When a class is entered or levels up, each weapon skill that class can
-#                     learn is raised to at least floor(highest other class snapshot × this).
-#                     The result is clamped to the current level × 5 cap and never lowers a
-#                     skill. 0 disables the floor. Snapshots are read at login and on switch.
-#                     Playerbots are excluded.
-#        Default:     0.5
-
-Multiclass.WeaponSkillInheritRatio = 0.5
+#    Weapon skills keep the highest value stored for any class. Switching away and back
+#    does not replace that value with a lower one. The level cap still applies:
+#    current level × 5. Playerbots are excluded.
 
 #
 #    Multiclass.Retain.Enable

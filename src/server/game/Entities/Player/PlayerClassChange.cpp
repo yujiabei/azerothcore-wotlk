@@ -168,6 +168,12 @@ bool IsClassSkill(uint32 skillId)
         || skill->categoryId == SKILL_CATEGORY_ARMOR;
 }
 
+bool IsWeaponSkill(uint32 skillId)
+{
+    SkillLineEntry const* skill = sSkillLineStore.LookupEntry(skillId);
+    return skill && skill->categoryId == SKILL_CATEGORY_WEAPON;
+}
+
 // Class family spells, plus weapon/armor/class skill-line spells that are not shared by every class.
 // SPELLFAMILY_GENERIC (item mounts, companions) and professions stay on the character.
 bool IsClassBoundSpell(uint32 spellId, uint8 playerClass)
@@ -984,8 +990,9 @@ void Player::RestoreTalentGrantedSpells()
             GetName(), GetGUID().ToString(), restored);
 }
 
-// Fresh classes learn playercreateinfo skills, then level-scaled weapon/armor/class skills are raised to
-// level * 5 so learnSkillRewardedSpells grants ranks for the current level. LearnCustomSpells runs when
+// Fresh classes learn playercreateinfo skills, then level-scaled armor and class skills are raised to
+// level * 5 so learnSkillRewardedSpells grants ranks for the current level. Weapon skills keep the
+// highest value stored for any class, capped to this level. LearnCustomSpells runs when
 // CONFIG_START_CUSTOM_SPELLS is set. learnQuestRewardedSpells is intentionally not called: it would
 // teach the previous class's quest rewards (charger, dreadsteed, death gate). Action bars are not copied
 // from playercreateinfo_action.
@@ -1131,6 +1138,21 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
         }
     }
 
+    std::unordered_map<uint16, uint16> storedSkill;
+    {
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_CLASS_SKILL);
+        stmt->SetData(0, guid);
+        stmt->SetData(1, oldClass);
+        if (PreparedQueryResult result = CharacterDatabase.Query(stmt))
+        {
+            do
+            {
+                Field* fields = result->Fetch();
+                storedSkill[fields[0].Get<uint16>()] = fields[1].Get<uint16>();
+            } while (result->NextRow());
+        }
+    }
+
     for (auto const& itr : mSkillStatus)
     {
         if (itr.second.uState == SKILL_DELETED || !IsClassSkill(itr.first))
@@ -1140,6 +1162,36 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
         row.Id = uint16(itr.first);
         row.Value = GetPureSkillValue(itr.first);
         row.Max = GetPureMaxSkillValue(itr.first);
+        // A low-level visit must not erase a weapon skill this class already reached.
+        auto stored = storedSkill.find(row.Id);
+        if (stored != storedSkill.end() && IsWeaponSkill(row.Id) && stored->second > row.Value)
+            row.Value = stored->second;
+        if (row.Value > row.Max)
+            row.Max = row.Value;
+        outgoing.Skills.push_back(row);
+    }
+
+    for (auto const& stored : storedSkill)
+    {
+        if (!IsWeaponSkill(stored.first) || !stored.second)
+            continue;
+
+        bool present = false;
+        for (SkillSnap const& row : outgoing.Skills)
+        {
+            if (row.Id != stored.first)
+                continue;
+
+            present = true;
+            break;
+        }
+        if (present)
+            continue;
+
+        SkillSnap row;
+        row.Id = stored.first;
+        row.Value = stored.second;
+        row.Max = stored.second;
         outgoing.Skills.push_back(row);
     }
 
@@ -1453,7 +1505,7 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
             if (itr.second.uState == SKILL_DELETED || !IsClassSkill(itr.first))
                 continue;
             SkillRaceClassInfoEntry const* rc = GetSkillRaceClassInfo(itr.first, getRace(), getClass());
-            if (!rc || GetSkillRangeType(rc) != SKILL_RANGE_LEVEL)
+            if (!rc || GetSkillRangeType(rc) != SKILL_RANGE_LEVEL || IsWeaponSkill(itr.first))
                 continue;
             skillIds.push_back(itr.first);
         }
@@ -1483,7 +1535,7 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
     }
 
     UpdateSkillsForLevel();
-    // Mastery aura and the weapon-skill floor. One call so the switch body stays small.
+    // Mastery aura and the highest saved weapon skill. One call so the switch body stays small.
     ApplyMulticlassClassEnter(oldClass);
 
     for (TalentSnap const& row : incoming.Talents)
@@ -1653,6 +1705,10 @@ bool Player::ChangeClass(uint8 newClass, CharacterDatabaseTransaction trans)
                 member->SetStats(this);
 
     ConsumeArchive(trans, guid, newClass);
+    // The delete above drops this class's rows. Put the highest weapon skills back in the same
+    // transaction, or the next login only sees the level-capped value.
+    ApplyWeaponSkillFloor();
+    AppendWeaponSkillMax(trans);
     AppendProgress(trans, guid, newClass, GetLevel(), GetUInt32Value(PLAYER_XP), GetRestBonus(), GetActiveSpec(),
         GetLevelPlayedTime(), returning ? incoming.PetId : 0, m_classDailyBonusAt, m_multiclassHonoredBonus);
     for (PetPark const& parked : parkedPets)
